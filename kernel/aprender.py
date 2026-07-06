@@ -232,6 +232,15 @@ def main(descargar=True):
         print(f"  Subtítulos: {len(subtitulos)} bytes añadido")
         libros.append(subtitulos)
 
+    # Identidad de Byte: frases repetidas para que aprenda quién es
+    id_ruta = os.path.join(RUTA, 'identidad_byte.txt')
+    if os.path.exists(id_ruta):
+        with open(id_ruta, encoding='utf-8') as f:
+            identidad = f.read().strip().split('\n')
+        identidad_repetida = ('\n'.join(identidad) + ' ') * 500
+        print(f"  Identidad Byte: {len(identidad)} frases x500")
+        libros.append(identidad_repetida)
+
     print(f"  Textos libros: {len(libros)}")
 
     print("\n2. Contando n-gramas de definiciones...")

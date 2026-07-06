@@ -303,97 +303,16 @@ def main(descargar=True):
     total_freq = cur.fetchone()[0]
     conn.close()
 
-    #
-    # 6. 4-gramas (streaming directo a SQLite, sin RAM)
-    #
-    print("\n6. Extrayendo 4-gramas (streaming)...")
-    conn = sqlite3.connect(RUTA_DB)
-    conn.execute("PRAGMA synchronous=OFF")
-    conn.execute("PRAGMA journal_mode=MEMORY")
-    conn.execute("PRAGMA cache_size=100000")
-
-    # Tablas temporales para definiciones y libros por separado
-    conn.execute("CREATE TABLE _4def (w1 TEXT, w2 TEXT, w3 TEXT, w4 TEXT)")
-    conn.execute("CREATE TABLE _4lib (w1 TEXT, w2 TEXT, w3 TEXT, w4 TEXT)")
-    batch_def, batch_lib = [], []
-    BDEF, BLIB = 200000, 200000
-    total4_def, total4_lib = 0, 0
-
-    conn.execute("BEGIN")
-    for n4 in extraer_ngramas(textos_def, ventana=4):
-        if len(n4) != 4: continue
-        batch_def.append(n4)
-        total4_def += 1
-        if len(batch_def) >= BDEF:
-            conn.executemany("INSERT INTO _4def VALUES (?,?,?,?)", batch_def)
-            batch_def = []
-            if total4_def % 1000000 == 0:
-                print(f"  defs: {total4_def//1000000}M...", end='\r')
-    if batch_def:
-        conn.executemany("INSERT INTO _4def VALUES (?,?,?,?)", batch_def)
-    conn.commit()
-    print(f"  defs: {total4_def} 4-gramas")
-
-    conn.execute("BEGIN")
-    for n4 in extraer_ngramas(libros, ventana=4):
-        if len(n4) != 4: continue
-        batch_lib.append(n4)
-        total4_lib += 1
-        if len(batch_lib) >= BLIB:
-            conn.executemany("INSERT INTO _4lib VALUES (?,?,?,?)", batch_lib)
-            batch_lib = []
-            if total4_lib % 5000000 == 0:
-                print(f"  libros: {total4_lib//1000000}M...", end='\r')
-    if batch_lib:
-        conn.executemany("INSERT INTO _4lib VALUES (?,?,?,?)", batch_lib)
-    conn.commit()
-    print(f"  libros: {total4_lib} 4-gramas")
-
-    # Agregar definiciones (sin filtro, peso 1)
-    print("  Agregando definiciones...")
-    conn.execute("""CREATE TABLE ngramas4 AS
-        SELECT w1, w2, w3, w4, COUNT(*) as freq FROM _4def
-        GROUP BY w1, w2, w3, w4""")
-    conn.execute("DROP TABLE _4def")
-
-    # Agregar libros (filtro freq>=2, peso 30x)
-    print("  Agregando libros (freq>=2, x30)...")
-    conn.execute("""CREATE TABLE _lib_agg AS
-        SELECT w1, w2, w3, w4, COUNT(*) as raw_freq FROM _4lib
-        GROUP BY w1, w2, w3, w4 HAVING raw_freq >= 2""")
-    conn.execute("DROP TABLE _4lib")
-
-    # Merge: insertar libros con peso 30 en ngramas4
-    cur = conn.execute("SELECT w1, w2, w3, w4, raw_freq FROM _lib_agg")
-    batch = []
-    conn.execute("BEGIN")
-    idx = 0
-    for row in cur:
-        w1, w2, w3, w4, raw = row
-        batch.append((w1, w2, w3, w4, raw * 30))
-        idx += 1
-        if len(batch) >= 200000:
-            conn.executemany(
-                "INSERT INTO ngramas4 (w1, w2, w3, w4, freq) VALUES (?,?,?,?,?)", batch)
-            batch = []
-            if idx % 1000000 == 0:
-                print(f"  merge: {idx//1000000}M...", end='\r')
-    if batch:
-        conn.executemany(
-            "INSERT INTO ngramas4 (w1, w2, w3, w4, freq) VALUES (?,?,?,?,?)", batch)
-    conn.commit()
-    conn.execute("DROP TABLE _lib_agg")
-
-    print("\n  Creando índices ngramas4...")
-    conn.execute("CREATE INDEX idx_w123 ON ngramas4(w1, w2, w3)")
-    conn.execute("CREATE INDEX idx_w1_4 ON ngramas4(w1)")
-    cur = conn.execute("SELECT COUNT(*) FROM ngramas4")
-    total4 = cur.fetchone()[0]
+    total4 = 0
 
     #
     # 7. Tabla de conversaciones (pares línea→respuesta)
     #
     print("\n7. Construyendo tabla de conversaciones...")
+    conn = sqlite3.connect(RUTA_DB)
+    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA journal_mode=MEMORY")
+    conn.execute("PRAGMA cache_size=100000")
     ruta_sub = os.path.join(RUTA, 'subtitulos_es.txt')
     conn.execute("""CREATE TABLE conversaciones(
         id INTEGER PRIMARY KEY,

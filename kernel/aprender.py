@@ -389,6 +389,54 @@ def main(descargar=True):
     conn.execute("CREATE INDEX idx_w1_4 ON ngramas4(w1)")
     cur = conn.execute("SELECT COUNT(*) FROM ngramas4")
     total4 = cur.fetchone()[0]
+
+    #
+    # 7. Tabla de conversaciones (pares línea→respuesta)
+    #
+    print("\n7. Construyendo tabla de conversaciones...")
+    ruta_sub = os.path.join(RUTA, 'subtitulos_es.txt')
+    conn.execute("""CREATE TABLE conversaciones(
+        id INTEGER PRIMARY KEY,
+        linea TEXT, respuesta TEXT, clave TEXT
+    )""")
+    conn.execute("CREATE INDEX idx_clave ON conversaciones(clave)")
+    if os.path.exists(ruta_sub):
+        with open(ruta_sub, encoding='utf-8', errors='replace') as f:
+            lineas = f.read().splitlines()
+        batch_conv = []
+        ult_valida = None
+        for l in lineas:
+            l = l.strip()
+            if not l or l.startswith('[') or len(l) < 8:
+                ult_valida = None
+                continue
+            if not re.search(r'[a-zA-Záéíóúñ]{3,}', l):
+                continue
+            if ult_valida:
+                clave = ''
+                for w in limpiar(ult_valida).split():
+                    if len(w) >= 4:
+                        clave = w
+                        break
+                if clave:
+                    batch_conv.append((ult_valida, l, clave))
+                    if len(batch_conv) >= 50000:
+                        conn.executemany(
+                            "INSERT INTO conversaciones(linea,respuesta,clave) VALUES (?,?,?)",
+                            batch_conv)
+                        batch_conv = []
+            ult_valida = l
+        if batch_conv:
+            conn.executemany(
+                "INSERT INTO conversaciones(linea,respuesta,clave) VALUES (?,?,?)",
+                batch_conv)
+        conn.commit()
+        cur = conn.execute("SELECT COUNT(*) FROM conversaciones")
+        total_conv = cur.fetchone()[0]
+        print(f"  {total_conv} pares de conversación")
+    else:
+        print(f"  subtitulos_es.txt no encontrado, 0 pares")
+
     conn.close()
 
     t = time.time() - t0

@@ -6,6 +6,8 @@ import os, json, re, sqlite3, urllib.request, time, sys
 
 RUTA = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datos')
 RUTA_DB = os.path.join(RUTA, 'asociaciones.db')
+_ENG = frozenset('the and you that for with this have are was had not but all can has its who his her been will would could should about than then them were what when where which your some any also each very just after such because'.split())
+_ESP = frozenset('que con las los por para del como muy bien pero sobre entre desde hasta porque cuando donde quien ella este todo eso esa esos esas estos estas puede tiene hace dice solo casa tiempo parte forma misma nunca siempre tambien entonces despues antes mucho poco algo nada cada aqui alli ahi ser haber estar tener hacer decir ir ver dar saber querer poder poner parecer creer llamar seguir encontrar dejar mirar pensar salir volver tomar pedir hablar pasar llegar llevar sentir tratar tocar cambiar vivir morir nacer crecer buscar esperar perder ganar meter sacar abrir cerrar traer mandar saber deber poder querer necesitar gustar doler importar'.split())
 STOP = frozenset({
     'que', 'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas',
     'con', 'por', 'para', 'del', 'al', 'en', 'de', 'a', 'e', 'i',
@@ -228,8 +230,21 @@ def main(descargar=True):
             print(f"  Subtitulos recombindo: {os.path.getsize(subs_ruta)} bytes")
     if os.path.exists(subs_ruta):
         with open(subs_ruta, encoding='utf-8') as f:
-            subtitulos = f.read()
-        print(f"  Subtítulos: {len(subtitulos)} bytes añadido")
+            lineas_sub = f.read().splitlines()
+        lineas_filt = []
+        for l in lineas_sub:
+            l = l.strip()
+            if not l or l.startswith('[') or len(l) < 8: continue
+            has_tilde = bool(re.search(r'[áéíóúñ¿¡]', l.lower()))
+            words = re.findall(r'[a-záéíóúñ]+', l.lower())
+            if not has_tilde and words:
+                eng_w = sum(1 for w in words if w in _ENG)
+                esp_w = sum(1 for w in words if w in _ESP)
+                if eng_w > 0 and eng_w >= esp_w:
+                    continue
+            lineas_filt.append(l)
+        subtitulos = '\n'.join(lineas_filt)
+        print(f"  Subtítulos: {len(subtitulos)} bytes ({len(lineas_filt)}/{len(lineas_sub)} líneas)")
         libros.append(subtitulos)
 
     # Identidad de Byte: frases repetidas para que aprenda quién es
@@ -331,6 +346,15 @@ def main(descargar=True):
                 continue
             if not re.search(r'[a-zA-Záéíóúñ]{3,}', l):
                 continue
+            # Filtrar líneas en inglés
+            has_tilde = bool(re.search(r'[áéíóúñ¿¡]', l.lower()))
+            words = re.findall(r'[a-záéíóúñ]+', l.lower())
+            if not has_tilde and words:
+                eng_w = sum(1 for w in words if w in _ENG)
+                esp_w = sum(1 for w in words if w in _ESP)
+                if eng_w > 0 and eng_w >= esp_w:
+                    ult_valida = None
+                    continue
             if ult_valida:
                 clave = ''
                 for w in limpiar(ult_valida).split():

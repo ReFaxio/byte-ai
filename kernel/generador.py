@@ -122,7 +122,13 @@ class Generador:
                 w2f = self._sig2(w1p)
                 if w2f:
                     return w1p, w2f
-        return 'hola', 'que'
+        # Último recurso: bigrama más común de toda la DB
+        cur = self._db.execute(
+            "SELECT w1, w2 FROM ngramas ORDER BY freq DESC LIMIT 1")
+        row = cur.fetchone()
+        if row:
+            return row[0], row[1]
+        return w1, w2
 
     def _caminar(self, w1, w2, max_pal=12):
         pal = [w1, w2]
@@ -166,7 +172,7 @@ class Generador:
 
     def responder(self, entrada):
         toks = self.tokenizar(entrada)
-        if not toks:
+        if not toks or all(len(t) <= 2 for t in toks):
             toks = ['hola']
         if len(toks) >= 2:
             w1, w2 = toks[-2], toks[-1]
@@ -177,7 +183,7 @@ class Generador:
                 base, _ = self._desclitic(w)
                 w2 = self._sig2(base)
                 if not w2:
-                    w1, w2 = 'hola', 'que'
+                    w1, w2 = w, w
                 else:
                     w1 = base
             else:

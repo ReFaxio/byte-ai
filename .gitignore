@@ -1,0 +1,7 @@
+datos/asociaciones.db
+datos/subtitulos_es.txt
+datos/memoria.db
+__pycache__/
+*.pyc
+_temp_*.py
+_temp_check.py

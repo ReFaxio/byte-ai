@@ -226,7 +226,7 @@ def main(descargar=True):
     print(f"  Textos libros: {len(libros)}")
 
     print("\n2. Contando n-gramas de definiciones...")
-    counts_def = contar_ngramas(extraer_ngramas(textos_def, ventana=4))
+    counts_def = contar_ngramas(extraer_ngramas(textos_def, ventana=3))
 
     total_def = sum(counts_def.values())
     print(f"\n3. Contando n-gramas de libros+subtitulos...")

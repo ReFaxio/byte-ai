@@ -216,6 +216,7 @@ def main(descargar=True):
 
     libros = descargar_gutenberg() if descargar else []
 
+    usar_subtitulos = '--subtitles' in sys.argv
     subs_ruta = os.path.join(RUTA, 'subtitulos_es.txt')
     if not os.path.exists(subs_ruta):
         partes = sorted([p for p in os.listdir(RUTA) if p.startswith('subt_')])
@@ -227,7 +228,7 @@ def main(descargar=True):
                         out.write(f.read())
             print(f"  Subtitulos recombindo: {os.path.getsize(subs_ruta)} bytes")
     lineas_conv = []  # reutilizado en paso 7
-    if os.path.exists(subs_ruta):
+    if usar_subtitulos and os.path.exists(subs_ruta):
         with open(subs_ruta, encoding='utf-8') as f:
             lineas_sub = f.read().splitlines()
         lineas_filt = []
@@ -246,6 +247,8 @@ def main(descargar=True):
         lineas_conv = lineas_filt  # guardar para paso 7
         print(f"  Subtítulos: {len(subtitulos)} bytes ({len(lineas_filt)}/{len(lineas_sub)} líneas)")
         libros.append(subtitulos)
+    elif not usar_subtitulos:
+        print("  Subtítulos: desactivados (usa --subtitles para incluirlos)")
 
     # Identidad de Byte: frases repetidas para que aprenda quién es
     id_ruta = os.path.join(RUTA, 'identidad_byte.txt')

@@ -353,6 +353,15 @@ def main(descargar=True):
         cur = conn.execute("SELECT COUNT(*) FROM conversaciones")
         total_conv = cur.fetchone()[0]
         print(f"  {total_conv} pares de conversación")
+
+        # FTS5 para búsqueda rápida de texto completo
+        try:
+            conn.execute("CREATE VIRTUAL TABLE c_fts USING fts5(linea, respuesta)")
+            conn.execute("INSERT INTO c_fts SELECT linea, respuesta FROM conversaciones")
+            conn.commit()
+            print("  Índice FTS5 creado")
+        except Exception as e:
+            print(f"  FTS5 no disponible ({e}), usando LIKE")
     else:
         print(f"  subtitulos_es.txt no encontrado, 0 pares")
 

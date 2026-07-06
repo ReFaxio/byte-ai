@@ -1,5 +1,5 @@
-"""Conversación asociativa — busca pares en tabla SQLite.
-0 if/else, 0 textos fijos."""
+"""Conversación asociativa.
+Busca en subtítulos reales usando FTS5. 0 if/else, 0 textos fijos."""
 import os, re, sqlite3
 
 RUTA = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datos')
@@ -8,67 +8,68 @@ _STOP = frozenset('que de la el en y a los las un por con no se me te le lo su a
 class Conversar:
     def __init__(self):
         self._db = None
+        self._fts = None
         self._cargar()
 
     def _cargar(self):
         ruta = os.path.join(RUTA, 'asociaciones.db')
-        if os.path.exists(ruta):
-            self._db = sqlite3.connect(ruta, check_same_thread=False)
-            self._db.execute("PRAGMA query_only=1")
+        if not os.path.exists(ruta):
+            return
+        self._db = sqlite3.connect(ruta, check_same_thread=False)
+        self._db.execute("PRAGMA query_only=1")
+        # Detectar si la tabla FTS5 existe
+        cur = self._db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='c_fts'")
+        if cur.fetchone():
+            self._fts = True
+        else:
+            self._fts = False
 
-    def _normalizar(self, t):
+    def _norm(self, t):
         t = t.lower()
         for a, b in [('á','a'),('é','e'),('í','i'),('ó','o'),('ú','u'),('ü','u')]:
             t = t.replace(a, b)
         return re.sub(r'[^a-zñ ]', ' ', t).strip()
 
-    def tokenizar(self, texto):
-        return self._normalizar(texto).split()
-
-    def _clave(self, texto):
-        norm = self._normalizar(texto)
-        for w in norm.split():
-            if len(w) >= 4 and w not in _STOP:
-                return w
-        return norm.split()[0] if norm.split() else ''
+    def _tokens(self, texto):
+        return [w for w in self._norm(texto).split()
+                if len(w) >= 3 and w not in _STOP]
 
     def responder(self, entrada):
         if not self._db:
             return None
-        toks = self.tokenizar(entrada)
+        toks = self._tokens(entrada)
         if not toks:
             return None
-        entrada_norm = ' '.join(toks)
-        # Buscar por palabra clave
-        for t in toks:
-            if len(t) < 4:
-                continue
-            cur = self._db.execute(
-                "SELECT linea, respuesta FROM conversaciones WHERE clave=? ORDER BY id LIMIT 200",
-                (t,))
-            for linea, respuesta in cur.fetchall():
-                if not respuesta or len(respuesta) < 5:
-                    continue
-                if entrada_norm in self._normalizar(linea):
-                    punt = 100 + len(respuesta.split())
-                    return respuesta[:160]
-        # Búsqueda secundaria: LIKE en linea (solo para primera palabra)
-        if toks:
-            w = toks[0]
-            if len(w) >= 3:
-                cur = self._db.execute(
-                    "SELECT respuesta FROM conversaciones WHERE clave=? LIMIT 100",
-                    (w,))
-                for (respuesta,) in cur.fetchall():
-                    if respuesta and len(respuesta) > 10:
-                        return respuesta[:160]
-        return None
 
-    def _formatear(self, t):
-        if not t:
-            return ''
-        t = t.strip()
-        t = t[0].upper() + t[1:]
-        if t[-1] not in '.!?¿¡':
-            t += '.'
-        return t
+        # 1. FTS5 si disponible
+        if self._fts:
+            query = ' OR '.join(toks)
+            cur = self._db.execute(
+                "SELECT respuesta FROM c_fts WHERE c_fts MATCH ? LIMIT 30",
+                (query,))
+            candidatos = [r for (r,) in cur.fetchall()
+                          if len(r) >= 8 and r.count(' ') >= 1]
+            if candidatos:
+                for c in candidatos:
+                    if len(c) >= 20:
+                        return c[:200]
+                return candidatos[0][:200]
+
+        # 2. Fallback: LIKE sobre primera palabra clave
+        cur = self._db.execute(
+            "SELECT linea, respuesta FROM conversaciones WHERE clave=? ORDER BY id LIMIT 200",
+            (toks[0],))
+        for linea, respuesta in cur.fetchall():
+            if not respuesta or len(respuesta) < 8:
+                continue
+            if self._norm(entrada) in self._norm(linea):
+                return respuesta[:200]
+        # 3. Fallback extremo: cualquier respuesta con esa clave
+        cur = self._db.execute(
+            "SELECT respuesta FROM conversaciones WHERE clave=? LIMIT 50",
+            (toks[0],))
+        for (respuesta,) in cur.fetchall():
+            if respuesta and len(respuesta) > 10:
+                return respuesta[:200]
+        return None

@@ -19,7 +19,7 @@ class Conversar:
         self._db.execute("PRAGMA query_only=1")
         # Detectar si la tabla FTS5 existe
         cur = self._db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='c_fts'")
+            "SELECT name FROM sqlite_master WHERE name='c_fts'")
         if cur.fetchone():
             self._fts = True
         else:
@@ -44,17 +44,13 @@ class Conversar:
 
         # 1. FTS5 si disponible
         if self._fts:
-            query = ' OR '.join(toks)
+            query = ' OR '.join(f'linea:{t}' for t in toks)
             cur = self._db.execute(
                 "SELECT respuesta FROM c_fts WHERE c_fts MATCH ? LIMIT 30",
                 (query,))
-            candidatos = [r for (r,) in cur.fetchall()
-                          if len(r) >= 8 and r.count(' ') >= 1]
-            if candidatos:
-                for c in candidatos:
-                    if len(c) >= 20:
-                        return c[:200]
-                return candidatos[0][:200]
+            for (respuesta,) in cur.fetchall():
+                if len(respuesta) >= 8 and respuesta.count(' ') >= 1:
+                    return respuesta[:300]
 
         # 2. Fallback: LIKE sobre primera palabra clave
         cur = self._db.execute(

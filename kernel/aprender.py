@@ -228,6 +228,7 @@ def main(descargar=True):
                     with open(os.path.join(RUTA, p), 'rb') as f:
                         out.write(f.read())
             print(f"  Subtitulos recombindo: {os.path.getsize(subs_ruta)} bytes")
+    lineas_conv = []  # reutilizado en paso 7
     if os.path.exists(subs_ruta):
         with open(subs_ruta, encoding='utf-8') as f:
             lineas_sub = f.read().splitlines()
@@ -244,6 +245,7 @@ def main(descargar=True):
                     continue
             lineas_filt.append(l)
         subtitulos = '\n'.join(lineas_filt)
+        lineas_conv = lineas_filt  # guardar para paso 7
         print(f"  Subtítulos: {len(subtitulos)} bytes ({len(lineas_filt)}/{len(lineas_sub)} líneas)")
         libros.append(subtitulos)
 
@@ -328,33 +330,15 @@ def main(descargar=True):
     conn.execute("PRAGMA synchronous=OFF")
     conn.execute("PRAGMA journal_mode=MEMORY")
     conn.execute("PRAGMA cache_size=100000")
-    ruta_sub = os.path.join(RUTA, 'subtitulos_es.txt')
     conn.execute("""CREATE TABLE conversaciones(
         id INTEGER PRIMARY KEY,
         linea TEXT, respuesta TEXT, clave TEXT
     )""")
     conn.execute("CREATE INDEX idx_clave ON conversaciones(clave)")
-    if os.path.exists(ruta_sub):
-        with open(ruta_sub, encoding='utf-8', errors='replace') as f:
-            lineas = f.read().splitlines()
+    if lineas_conv:
         batch_conv = []
         ult_valida = None
-        for l in lineas:
-            l = l.strip()
-            if not l or l.startswith('[') or len(l) < 8:
-                ult_valida = None
-                continue
-            if not re.search(r'[a-zA-Záéíóúñ]{3,}', l):
-                continue
-            # Filtrar líneas en inglés
-            has_tilde = bool(re.search(r'[áéíóúñ¿¡]', l.lower()))
-            words = re.findall(r'[a-záéíóúñ]+', l.lower())
-            if not has_tilde and words:
-                eng_w = sum(1 for w in words if w in _ENG)
-                esp_w = sum(1 for w in words if w in _ESP)
-                if eng_w > 0 and eng_w >= esp_w:
-                    ult_valida = None
-                    continue
+        for l in lineas_conv:
             if ult_valida:
                 clave = ''
                 for w in limpiar(ult_valida).split():

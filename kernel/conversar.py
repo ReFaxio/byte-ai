@@ -3,7 +3,7 @@ Busca en subtítulos reales usando FTS5. 0 if/else, 0 textos fijos."""
 import os, re, sqlite3
 
 RUTA = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datos')
-_STOP = frozenset('que de la el en y a los las un por con no se me te le lo su al del es fue era son sus mis tus este esa eso'.split())
+_STOP = frozenset('de la el en y a e i o u su tu mis sus al del'.split())
 
 class Conversar:
     def __init__(self):
@@ -32,8 +32,15 @@ class Conversar:
         return re.sub(r'[^a-zñ ]', ' ', t).strip()
 
     def _tokens(self, texto):
-        return [w for w in self._norm(texto).split()
-                if len(w) >= 3 and w not in _STOP]
+        raw = [w for w in self._norm(texto).split()
+               if len(w) >= 2 and w not in _STOP]
+        variantes = set(raw)
+        for t in raw:
+            if len(t) > 4:
+                variantes.add(t[:4])
+            if len(t) > 5:
+                variantes.add(t[:5])
+        return list(variantes)
 
     def responder(self, entrada):
         if not self._db:
@@ -52,19 +59,22 @@ class Conversar:
                 if len(respuesta) >= 8 and respuesta.count(' ') >= 1:
                     return respuesta[:300]
 
-        # 2. Fallback: LIKE sobre primera palabra clave
-        cur = self._db.execute(
-            "SELECT linea, respuesta FROM conversaciones WHERE clave=? ORDER BY id LIMIT 200",
-            (toks[0],))
-        for linea, respuesta in cur.fetchall():
-            if not respuesta or len(respuesta) < 8:
+        # 2. Fallback: LIKE sobre clave (primeros 4+ chars)
+        for intento in [toks[0], toks[0][:4], toks[0][:3]]:
+            if len(intento) < 3:
                 continue
-            if self._norm(entrada) in self._norm(linea):
-                return respuesta[:200]
+            cur = self._db.execute(
+                "SELECT linea, respuesta FROM conversaciones WHERE clave LIKE ? ORDER BY id LIMIT 100",
+                (intento + '%',))
+            for linea, respuesta in cur.fetchall():
+                if not respuesta or len(respuesta) < 8:
+                    continue
+                if self._norm(entrada) in self._norm(linea) or len(intento) <= 4:
+                    return respuesta[:200]
         # 3. Fallback extremo: cualquier respuesta con esa clave
         cur = self._db.execute(
-            "SELECT respuesta FROM conversaciones WHERE clave=? LIMIT 50",
-            (toks[0],))
+            "SELECT respuesta FROM conversaciones WHERE clave LIKE ? LIMIT 30",
+            (toks[0][:4] + '%',))
         for (respuesta,) in cur.fetchall():
             if respuesta and len(respuesta) > 10:
                 return respuesta[:200]

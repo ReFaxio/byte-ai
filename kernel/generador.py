@@ -130,10 +130,10 @@ class Generador:
             return row[0], row[1]
         return w1, w2
 
-    def _caminar(self, w1, w2, max_pal=12):
-        pal = [w1, w2]
+    def _caminar(self, semilla, max_pal=12):
+        pal = list(semilla)
         vistos = set()
-        for _ in range(max_pal - 2):
+        for _ in range(max_pal - len(semilla)):
             ctx3 = len(pal) >= 3
             if ctx3:
                 w4 = self._sig4(pal[-3], pal[-2], pal[-1])
@@ -189,8 +189,11 @@ class Generador:
             else:
                 w1 = w
         w1, w2 = self._buscar_bigrama(w1, w2)
+        semilla = toks + [w2]
+        if len(semilla) < 2:
+            semilla = [w1, w2]
         for _ in range(8):
-            t = self._caminar(w1, w2)
+            t = self._caminar(semilla)
             if t and t not in self._ultimas and len(t.split()) >= 3:
                 self._ultimas.append(t)
                 if len(self._ultimas) > 5:

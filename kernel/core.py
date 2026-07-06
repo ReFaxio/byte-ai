@@ -1,5 +1,4 @@
-"""Byte — núcleo asociativo puro.
-Memoria conversacional + n-grama como respaldo."""
+"""Byte — núcleo n-grama con respaldo conversacional."""
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -17,13 +16,11 @@ class Byte:
         entrada = entrada.strip()
         if not entrada:
             return ""
-        respuesta = self.conversar.responder(entrada)
+        respuesta = self.generador.responder(entrada)
         if not respuesta:
-            respuesta = self.generador.responder(entrada)
-        if not respuesta:
-            respuesta = ""
-        self.memoria.guardar(entrada, respuesta)
-        return respuesta
+            respuesta = self.conversar.responder(entrada)
+        self.memoria.guardar(entrada, respuesta or "")
+        return respuesta or ""
 
     def __call__(self, entrada):
         return self.procesar(entrada)

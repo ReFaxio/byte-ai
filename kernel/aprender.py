@@ -217,6 +217,15 @@ def main(descargar=True):
     libros = descargar_gutenberg() if descargar else []
 
     subs_ruta = os.path.join(RUTA, 'subtitulos_es.txt')
+    if not os.path.exists(subs_ruta):
+        partes = sorted([p for p in os.listdir(RUTA) if p.startswith('subt_')])
+        if partes:
+            print(f"  Recombinando {len(partes)} partes...")
+            with open(subs_ruta, 'wb') as out:
+                for p in partes:
+                    with open(os.path.join(RUTA, p), 'rb') as f:
+                        out.write(f.read())
+            print(f"  Subtitulos recombindo: {os.path.getsize(subs_ruta)} bytes")
     if os.path.exists(subs_ruta):
         with open(subs_ruta, encoding='utf-8') as f:
             subtitulos = f.read()
@@ -232,12 +241,12 @@ def main(descargar=True):
     print(f"\n3. Contando n-gramas de libros+subtitulos...")
     counts_lib_raw = contar_ngramas(extraer_ngramas(libros, ventana=3))
     # Filtrar trigramas con frecuencia ≥2 y aplicar peso 6x
-    counts_lib = {n: c * 6 for n, c in counts_lib_raw.items() if c >= 2}
+    counts_lib = {n: c * 30 for n, c in counts_lib_raw.items() if c >= 2}
     print(f"  Descartados {len(counts_lib_raw) - len(counts_lib)} trigramas con freq=1")
     final = dict(counts_def)
     for n, c in counts_lib.items():
         final[n] = final.get(n, 0) + c
-    print(f"  Peso libros+subtitulos: 6x (con filtro freq≥2)")
+    print(f"  Peso libros+subtitulos: 30x (con filtro freq≥2)")
     print(f"  {len(final)} trigramas únicos totales")
 
     ngramas_pesados = []
@@ -291,7 +300,7 @@ def main(descargar=True):
     print("\n6. Extrayendo 4-gramas...")
     ngramas4_def = contar_ngramas(extraer_ngramas(textos_def, ventana=4))
     ngramas4_lib_raw = contar_ngramas(extraer_ngramas(libros, ventana=4))
-    ngramas4_lib = {n: c * 6 for n, c in ngramas4_lib_raw.items() if c >= 2}
+    ngramas4_lib = {n: c * 30 for n, c in ngramas4_lib_raw.items() if c >= 2}
     print(f"  Descartados {len(ngramas4_lib_raw) - len(ngramas4_lib)} 4-gramas con freq=1 en libros")
     final4 = dict(ngramas4_def)
     for n, c in ngramas4_lib.items():

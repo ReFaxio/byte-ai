@@ -51,13 +51,24 @@ class Conversar:
 
         # 1. FTS5 si disponible
         if self._fts:
-            query = ' OR '.join(f'linea:{t}' for t in toks)
-            cur = self._db.execute(
-                "SELECT respuesta FROM c_fts WHERE c_fts MATCH ? LIMIT 30",
-                (query,))
-            for (respuesta,) in cur.fetchall():
-                if len(respuesta) >= 8 and respuesta.count(' ') >= 1:
-                    return respuesta[:300]
+            # Primero con AND (todas las palabras deben estar en la línea)
+            for modo in ['AND', 'OR']:
+                query = f' {modo} '.join(f'linea:{t}' for t in toks)
+                cur = self._db.execute(
+                    "SELECT linea, respuesta FROM c_fts WHERE c_fts MATCH ? LIMIT 20",
+                    (query,))
+                for linea_fts, respuesta in cur.fetchall():
+                    if len(respuesta) < 8 or respuesta.count(' ') < 1:
+                        continue
+                    # Para modo AND, aceptar directamente (todas las palabras matchean)
+                    if modo == 'AND':
+                        return respuesta[:300]
+                    # Para modo OR, preferir líneas que contengan el input original
+                    if self._norm(entrada) in self._norm(linea_fts):
+                        return respuesta[:300]
+                if modo == 'AND':
+                    # AND no encontró nada, continuar con OR
+                    continue
 
         # 2. Fallback: LIKE sobre clave (primeros 4+ chars)
         for intento in [toks[0], toks[0][:4], toks[0][:3]]:

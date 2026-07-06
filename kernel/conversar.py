@@ -21,8 +21,6 @@ class Conversar:
             "SELECT name FROM sqlite_master WHERE name='c_fts'")
         if cur.fetchone():
             self._fts = True
-        else:
-            self._fts = False
 
     def _norm(self, t):
         t = t.lower()
@@ -30,39 +28,58 @@ class Conversar:
             t = t.replace(a, b)
         return re.sub(r'[^a-zñ ]', ' ', t).strip()
 
-    def _tokens(self, texto):
-        raw = [w for w in self._norm(texto).split()
-               if len(w) >= 2 and w not in _STOP]
-        variantes = set(raw)
-        for t in raw:
+    def _palabras(self, texto):
+        return [w for w in self._norm(texto).split()
+                if len(w) >= 2 and w not in _STOP]
+
+    def _variantes(self, palabras):
+        v = set(palabras)
+        for t in palabras:
             if len(t) > 4:
-                variantes.add(t[:4])
+                v.add(t[:4])
             if len(t) > 5:
-                variantes.add(t[:5])
-        return list(variantes)
+                v.add(t[:5])
+        return list(v)
+
+    def _cuantas_matchean(self, palabras, linea):
+        nl = self._norm(linea)
+        return sum(1 for p in palabras if p in nl)
 
     def responder(self, entrada):
         if not self._db:
             return None
-        toks = self._tokens(entrada)
-        if not toks:
+        raw = self._palabras(entrada)
+        if not raw:
             return None
+        variantes = self._variantes(raw)
         if self._fts:
-            for modo in ['AND', 'OR']:
-                query = f' {modo} '.join(f'linea:{t}' for t in toks)
+            # AND: todas las palabras originales en la misma línea
+            if len(raw) >= 2:
+                q_and = ' AND '.join(f'linea:{t}' for t in raw)
                 cur = self._db.execute(
-                    "SELECT linea, respuesta FROM c_fts WHERE c_fts MATCH ? LIMIT 20",
-                    (query,))
+                    "SELECT linea, respuesta FROM c_fts WHERE c_fts MATCH ? LIMIT 5",
+                    (q_and,))
                 for linea_fts, respuesta in cur.fetchall():
-                    if len(respuesta) < 8 or respuesta.count(' ') < 1:
-                        continue
-                    if modo == 'AND':
+                    if len(respuesta) >= 8:
                         return respuesta[:300]
-                    if self._norm(entrada) in self._norm(linea_fts):
-                        return respuesta[:300]
-                if modo == 'AND':
+            # OR: buscar con variantes, elegir la que más palabras originales contenga
+            q_or = ' OR '.join(f'linea:{t}' for t in variantes)
+            cur = self._db.execute(
+                "SELECT linea, respuesta FROM c_fts WHERE c_fts MATCH ? LIMIT 30",
+                (q_or,))
+            mejor_linea, mejor_resp, mejor_punt = None, None, 0
+            for linea_fts, respuesta in cur.fetchall():
+                if len(respuesta) < 8 or respuesta.count(' ') < 1:
                     continue
-        for intento in [toks[0], toks[0][:4], toks[0][:3]]:
+                punt = self._cuantas_matchean(raw, linea_fts)
+                if punt > mejor_punt:
+                    mejor_punt = punt
+                    mejor_resp = respuesta
+                    mejor_linea = linea_fts
+            if mejor_punt > 0 and mejor_resp:
+                return mejor_resp[:300]
+        # LIKE fallback
+        for intento in [raw[0], raw[0][:4], raw[0][:3]]:
             if len(intento) < 3:
                 continue
             cur = self._db.execute(
@@ -75,7 +92,7 @@ class Conversar:
                     return respuesta[:200]
         cur = self._db.execute(
             "SELECT respuesta FROM conversaciones WHERE clave LIKE ? LIMIT 30",
-            (toks[0][:4] + '%',))
+            (raw[0][:4] + '%',))
         for (respuesta,) in cur.fetchall():
             if respuesta and len(respuesta) > 10:
                 return respuesta[:200]

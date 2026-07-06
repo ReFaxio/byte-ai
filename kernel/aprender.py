@@ -211,9 +211,7 @@ def main(descargar=True):
     print("\n1. Defs & libros por separado...")
 
     defs_rae = texto_de_json('rae_diccionario.json', extraer_definiciones)
-    defs_dicc = texto_de_json('diccionario.json', extraer_definiciones)
-    conc = texto_de_json('conocimiento.json', extraer_conocimiento)
-    textos_def = defs_rae + defs_dicc + conc
+    textos_def = defs_rae
     print(f"  Textos definición: {len(textos_def)}")
 
     libros = descargar_gutenberg() if descargar else []

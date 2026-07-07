@@ -227,14 +227,13 @@ def main(descargar=True):
 
     print("  Subtítulos: eliminados")
 
-    # Identidad de Byte: frases repetidas para que aprenda quién es
+    # Identidad de Byte: texto plano, sin repetición
     id_ruta = os.path.join(RUTA, 'identidad_byte.txt')
     if os.path.exists(id_ruta):
         with open(id_ruta, encoding='utf-8') as f:
-            identidad = f.read().strip().split('\n')
-        identidad_repetida = ('\n'.join(identidad) + ' ') * 500
-        print(f"  Identidad Byte: {len(identidad)} frases x500")
-        libros.append(identidad_repetida)
+            identidad = f.read()
+        print(f"  Identidad Byte: {len(identidad)} bytes")
+        libros.append(identidad)
 
     print(f"  Textos libros: {len(libros)}")
 

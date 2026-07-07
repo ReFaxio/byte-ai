@@ -97,28 +97,37 @@ def descargar_gutenberg():
         ('https://www.gutenberg.org/cache/epub/17073/pg17073.txt', 'la_regenta.txt'),
         ('https://www.gutenberg.org/cache/epub/15781/pg15781.txt', 'estudiante_salamanca.txt'),
     ]
+    _ES = frozenset('que del las los con por para como muy este esta pero cada todo entre sobre hasta desde quien cuando donde porque segun sino mientras tanto'.split())
+    _PT = frozenset('ao da do em os as na no pelo pela dos das aos nas nos este isto isso mesmo como para sobre todos muito entre'.split())
     textos = []
     for url, nombre in libros:
         ruta = os.path.join(RUTA, nombre)
         if os.path.exists(ruta):
             with open(ruta, encoding='utf-8') as f:
-                textos.append(f.read())
-            print(f"  {nombre}: ya descargado")
+                data = f.read()
+            textos.append(data)
+            print(f"  {nombre}: {len(data)} bytes (usando cache)")
             continue
         print(f"  Descargando {nombre}...")
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Byte/3.0'})
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = r.read().decode('utf-8', errors='ignore')
-            # Quitar header/footer de Gutenberg
             inicio = data.find('*** START OF')
             fin = data.find('*** END OF')
             if inicio != -1 and fin != -1:
                 data = data[inicio:fin]
+            # Verificar que sea español
+            words = re.findall(r'[a-záéíóúñ]+', data.lower())
+            es_ct = sum(1 for w in words if w in _ES)
+            pt_ct = sum(1 for w in words if w in _PT)
+            if es_ct < pt_ct and es_ct < 5:
+                print(f"  {nombre}: NO ES ESPAÑOL (es={es_ct} pt={pt_ct}), SALTADO")
+                continue
             with open(ruta, 'w', encoding='utf-8') as f:
                 f.write(data)
             textos.append(data)
-            print(f"  {nombre}: {len(data)} bytes")
+            print(f"  {nombre}: {len(data)} bytes (es={es_ct} pt={pt_ct})")
         except Exception as e:
             print(f"  {nombre}: error {e}")
     return textos

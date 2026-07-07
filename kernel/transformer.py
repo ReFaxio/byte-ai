@@ -1,0 +1,620 @@
+"""Transformer puro numpy — 0 if/else, 0 texto fijo.
+Arquitectura: 2 capas, 2 cabezas, dim 64, ventana 32.
+Corre 100% en CPU, <100MB RAM entrenando, <10MB infiriendo.
+Meta: superar GPT/Claude/DeepSeek."""
+
+import numpy as np
+import os, json, re, time, pickle
+from collections import Counter
+
+RUTA_DATOS = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datos')
+RUTA_MODELO = os.path.join(RUTA_DATOS, 'transformer_model.npz')
+RUTA_VOCAB = os.path.join(RUTA_DATOS, 'vocabulario.json')
+
+# ===================================================================
+# Helpers
+# ===================================================================
+
+def softmax(x, axis=-1):
+    x = x - x.max(axis=axis, keepdims=True)
+    e = np.exp(x.astype(np.float64))
+    return (e / e.sum(axis=axis, keepdims=True)).astype(np.float32)
+
+
+def layer_norm(x, g, b, eps=1e-5):
+    m = x.mean(axis=-1, keepdims=True)
+    v = x.var(axis=-1, keepdims=True)
+    return g * (x - m) / np.sqrt(v + eps) + b
+
+
+def layer_norm_bwd(dout, x, g, b, eps=1e-5):
+    N = x.shape[-1]
+    m = x.mean(axis=-1, keepdims=True)
+    v = x.var(axis=-1, keepdims=True)
+    s = 1.0 / np.sqrt(v + eps)
+    dx_norm = dout * g
+    dg = (dout * (x - m) * s).sum(axis=tuple(range(dout.ndim - 1))).astype(np.float32)
+    db = dout.sum(axis=tuple(range(dout.ndim - 1))).astype(np.float32)
+    dx = s * (dx_norm - (1.0 / N) * dx_norm.sum(axis=-1, keepdims=True)
+              - (x - m) * s * s * (dx_norm * (x - m)).mean(axis=-1, keepdims=True))
+    return dx.astype(np.float32), dg, db
+
+
+# ===================================================================
+# Vocabulario
+# ===================================================================
+
+class Vocabulario:
+    def __init__(self, palabras=None):
+        self.stoi = {}
+        self.itos = []
+        if palabras:
+            for p in palabras:
+                self.stoi[p] = len(self.itos)
+                self.itos.append(p)
+
+    @property
+    def size(self):
+        return len(self.itos)
+
+    @classmethod
+    def desde_textos(cls, textos, max_size=8000, min_freq=2):
+        c = Counter()
+        for texto in textos:
+            for pal in Vocabulario._tokenizar(texto):
+                c[pal] += 1
+        comunes = [p for p, _ in c.most_common(max_size - 4) if _ >= min_freq]
+        especiales = ['<pad>', '<unk>', '<bos>', '<eos>']
+        return cls(especiales + comunes)
+
+    @staticmethod
+    def _tokenizar(texto):
+        if not texto:
+            return []
+        texto = texto.lower()
+        for a, b in [('á','a'),('é','e'),('í','i'),('ó','o'),('ú','u'),('ü','u')]:
+            texto = texto.replace(a, b)
+        return re.sub(r'[^a-zñ ]', ' ', texto).split()
+
+    @staticmethod
+    def limpiar(texto):
+        texto = texto.lower()
+        for a, b in [('á','a'),('é','e'),('í','i'),('ó','o'),('ú','u'),('ü','u')]:
+            texto = texto.replace(a, b)
+        return texto
+
+    def encode(self, palabras):
+        unk = self.stoi.get('<unk>', 0)
+        return [self.stoi.get(p, unk) for p in palabras]
+
+    def decode(self, ids):
+        return [self.itos[i] if i < len(self.itos) else '<unk>' for i in ids]
+
+    def a_texto(self, ids):
+        return ' '.join(self.decode(ids))
+
+    def guardar(self, ruta=None):
+        ruta = ruta or RUTA_VOCAB
+        with open(ruta, 'w', encoding='utf-8') as f:
+            json.dump({'stoi': self.stoi, 'itos': self.itos}, f, ensure_ascii=False)
+
+    @classmethod
+    def cargar(cls, ruta=None):
+        ruta = ruta or RUTA_VOCAB
+        if not os.path.exists(ruta):
+            return None
+        with open(ruta, encoding='utf-8') as f:
+            d = json.load(f)
+        v = cls.__new__(cls)
+        v.stoi = d['stoi']
+        v.itos = d['itos']
+        return v
+
+
+# ===================================================================
+# Transformer
+# ===================================================================
+
+class Transformer:
+    def __init__(self, vocab_size=8000, d_model=64, n_heads=2,
+                 n_layers=2, d_ff=256, max_seq=32, lr=1e-3):
+        self.vocab_size = vocab_size
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.d_ff = d_ff
+        self.max_seq = max_seq
+        self.d_k = d_model // n_heads
+        self.lr = lr
+        self.t = 0
+
+        self.p = {}
+        self._init_params()
+
+        self._mask = np.triu(np.full((max_seq, max_seq), -np.inf, dtype=np.float32), 1)
+
+        self._m = {}
+        self._v = {}
+        for k in self.p:
+            self._m[k] = np.zeros_like(self.p[k])
+            self._v[k] = np.zeros_like(self.p[k])
+
+    def _init_params(self):
+        p = self.p
+        s = 0.02
+        p['tok_emb'] = np.random.randn(self.vocab_size, self.d_model).astype(np.float32) * s
+        p['pos_emb'] = np.random.randn(self.max_seq, self.d_model).astype(np.float32) * s
+        for i in range(self.n_layers):
+            for w in ['W_q', 'W_k', 'W_v', 'W_o']:
+                p[f'{w}_{i}'] = np.random.randn(self.d_model, self.d_model).astype(np.float32) * s
+            p[f'ln1_g_{i}'] = np.ones(self.d_model, dtype=np.float32)
+            p[f'ln1_b_{i}'] = np.zeros(self.d_model, dtype=np.float32)
+            p[f'W_1_{i}'] = np.random.randn(self.d_model, self.d_ff).astype(np.float32) * s
+            p[f'b_1_{i}'] = np.zeros(self.d_ff, dtype=np.float32)
+            p[f'W_2_{i}'] = np.random.randn(self.d_ff, self.d_model).astype(np.float32) * s
+            p[f'b_2_{i}'] = np.zeros(self.d_model, dtype=np.float32)
+            p[f'ln2_g_{i}'] = np.ones(self.d_model, dtype=np.float32)
+            p[f'ln2_b_{i}'] = np.zeros(self.d_model, dtype=np.float32)
+        p['ln_f_g'] = np.ones(self.d_model, dtype=np.float32)
+        p['ln_f_b'] = np.zeros(self.d_model, dtype=np.float32)
+        p['W_out'] = np.random.randn(self.d_model, self.vocab_size).astype(np.float32) * s
+        p['b_out'] = np.zeros(self.vocab_size, dtype=np.float32)
+
+    # ------------------------------------------------------------ forward
+
+    def forward(self, tokens, c=None):
+        """Forward pass con cache.
+        tokens: (B, T) int64
+        c: dict opcional para guardar activaciones (necesario para backward)
+        returns: logits (B, T, V)
+        """
+        B, T = tokens.shape
+        p = self.p
+        save = c is not None
+
+        x = p['tok_emb'][tokens] + p['pos_emb'][:T]
+
+        for i in range(self.n_layers):
+            if save:
+                c[f'res1_{i}'] = x.copy()
+
+            x_ln = layer_norm(x, p[f'ln1_g_{i}'], p[f'ln1_b_{i}'])
+            if save:
+                c[f'x_ln1_{i}'] = x_ln.copy()
+
+            q = x_ln @ p[f'W_q_{i}']
+            k = x_ln @ p[f'W_k_{i}']
+            v = x_ln @ p[f'W_v_{i}']
+            if save:
+                c[f'q_{i}'] = q; c[f'k_{i}'] = k; c[f'v_{i}'] = v
+
+            nh, dk = self.n_heads, self.d_k
+            q_h = q.reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
+            k_h = k.reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
+            v_h = v.reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
+
+            s = q_h @ k_h.transpose(0, 1, 3, 2) / np.sqrt(dk)
+            s = s + self._mask[:T, :T]
+            a = softmax(s, -1)
+            if save:
+                c[f's_{i}'] = s; c[f'a_{i}'] = a
+
+            o_h = a @ v_h
+            o = o_h.transpose(0, 2, 1, 3).reshape(B, T, self.d_model)
+            if save:
+                c[f'o_{i}'] = o.copy()
+
+            o = o @ p[f'W_o_{i}']
+            x = (c[f'res1_{i}'] + o) if save else (x + o)
+
+            # -- FFN --
+            if save:
+                c[f'res2_{i}'] = x.copy()
+
+            x_ln = layer_norm(x, p[f'ln2_g_{i}'], p[f'ln2_b_{i}'])
+            if save:
+                c[f'x_ln2_{i}'] = x_ln.copy()
+
+            h = x_ln @ p[f'W_1_{i}'] + p[f'b_1_{i}']
+            h_relu = np.maximum(0, h)
+            if save:
+                c[f'h_{i}'] = h; c[f'h_relu_{i}'] = h_relu
+
+            o = h_relu @ p[f'W_2_{i}'] + p[f'b_2_{i}']
+            x = (c[f'res2_{i}'] + o) if save else (x + o)
+
+        x = layer_norm(x, p['ln_f_g'], p['ln_f_b'])
+        if save:
+            c['x_final'] = x.copy()
+        logits = x @ p['W_out'] + p['b_out']
+        return logits
+
+    # ----------------------------------------------------------- backward
+
+    def backward(self, dlogits, c):
+        """Backward pass completo.
+        dlogits: (B, T, V) gradiente de loss w.r.t. logits
+        returns: dict gradientes
+        """
+        p = self.p
+        g = {k: np.zeros_like(v) for k, v in p.items()}
+        B, T = dlogits.shape[:2]
+
+        # Output projection
+        dx = dlogits @ p['W_out'].T
+        g['W_out'] = c['x_final'].reshape(-1, self.d_model).T @ dlogits.reshape(-1, self.vocab_size)
+        g['b_out'] = dlogits.sum(axis=(0, 1)).astype(np.float32)
+
+        # Final layer norm
+        dx, g['ln_f_g'], g['ln_f_b'] = layer_norm_bwd(
+            dx, c['x_final'], p['ln_f_g'], p['ln_f_b'])
+
+        for i in reversed(range(self.n_layers)):
+            # ---- FFN sublayer ----
+            # forward: x2 = res2 + o_ffn
+            # dx starts as dL/dx2
+            d_o_ffn = dx  # from x2 = res2 + o_ffn
+            d_res2 = dx
+
+            # FFN: o_ffn = relu(x_ln2 @ W1 + b1) @ W2 + b2
+            d_h_relu = d_o_ffn @ p[f'W_2_{i}'].T
+            g[f'W_2_{i}'] = c[f'h_relu_{i}'].reshape(-1, self.d_ff).T @ d_o_ffn.reshape(-1, self.d_model)
+            g[f'b_2_{i}'] = d_o_ffn.sum(axis=(0, 1)).astype(np.float32)
+
+            d_h = d_h_relu * (c[f'h_{i}'] > 0).astype(np.float32)
+            g[f'W_1_{i}'] = c[f'x_ln2_{i}'].reshape(-1, self.d_model).T @ d_h.reshape(-1, self.d_ff)
+            g[f'b_1_{i}'] = d_h.sum(axis=(0, 1)).astype(np.float32)
+
+            d_x_ln2 = d_h @ p[f'W_1_{i}'].T
+
+            # Layer norm backward for FFN
+            d_via_ln, g[f'ln2_g_{i}'], g[f'ln2_b_{i}'] = layer_norm_bwd(
+                d_x_ln2, c[f'x_ln2_{i}'], p[f'ln2_g_{i}'], p[f'ln2_b_{i}'])
+
+            # Residual: dx2 = d_res2 + d_via_ln
+            dx = d_res2 + d_via_ln
+
+            # ---- Attention sublayer ----
+            # forward: x1 = res1 + o_attn
+            d_o_attn = dx
+            d_res1 = dx
+
+            # W_o projection: o_attn = o_before @ W_o
+            g[f'W_o_{i}'] = c[f'o_{i}'].reshape(-1, self.d_model).T @ d_o_attn.reshape(-1, self.d_model)
+            d_o_before = d_o_attn @ p[f'W_o_{i}'].T
+
+            # Reshape back to head form
+            nh, dk = self.n_heads, self.d_k
+            d_o_h = d_o_before.reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
+
+            # Attention backward: o_h = a @ v
+            # Get v in head form
+            v = c[f'v_{i}']
+            v_h = v.reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
+            a = c[f'a_{i}']
+
+            d_a = d_o_h @ v_h.transpose(0, 1, 3, 2)
+            d_v_h = a.transpose(0, 1, 3, 2) @ d_o_h
+
+            # Softmax backward: a = softmax(s)
+            s = c[f's_{i}']
+            d_s = a * (d_a - (a * d_a).sum(axis=-1, keepdims=True))
+
+            # Score backward: s = q_h @ k_h^T / sqrt(dk)
+            q_h = c[f'q_{i}'].reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
+            k_h = c[f'k_{i}'].reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
+
+            d_q_h = d_s @ k_h / np.sqrt(dk)
+            d_k_h = d_s.transpose(0, 1, 3, 2) @ q_h / np.sqrt(dk)
+
+            # Reshape gradients back to (B, T, D)
+            d_q = d_q_h.transpose(0, 2, 1, 3).reshape(B, T, self.d_model)
+            d_k = d_k_h.transpose(0, 2, 1, 3).reshape(B, T, self.d_model)
+            d_v = d_v_h.transpose(0, 2, 1, 3).reshape(B, T, self.d_model)
+
+            # QKV projection gradients
+            x_ln1 = c[f'x_ln1_{i}']
+            g[f'W_q_{i}'] = x_ln1.reshape(-1, self.d_model).T @ d_q.reshape(-1, self.d_model)
+            g[f'W_k_{i}'] = x_ln1.reshape(-1, self.d_model).T @ d_k.reshape(-1, self.d_model)
+            g[f'W_v_{i}'] = x_ln1.reshape(-1, self.d_model).T @ d_v.reshape(-1, self.d_model)
+
+            # Gradient through QKV to layer norm input
+            d_via_qkv = (d_q @ p[f'W_q_{i}'].T +
+                         d_k @ p[f'W_k_{i}'].T +
+                         d_v @ p[f'W_v_{i}'].T)
+
+            # Layer norm backward for attention
+            d_via_ln, g[f'ln1_g_{i}'], g[f'ln1_b_{i}'] = layer_norm_bwd(
+                d_via_qkv, c[f'x_ln1_{i}'], p[f'ln1_g_{i}'], p[f'ln1_b_{i}'])
+
+            # Residual: dx1 = d_res1 + d_via_ln
+            dx = d_res1 + d_via_ln
+
+        return g
+
+    # ----------------------------------------------------------- train
+
+    def train_step(self, tokens, targets, lr=None):
+        """Un paso de entrenamiento.
+        tokens: (B, T) int64 — entrada
+        targets: (B, T) int64 — target (next token)
+        returns: loss (float)
+        """
+        B, T = tokens.shape
+        lr = lr or self.lr
+        self.t += 1
+
+        c = {}
+        logits = self.forward(tokens, c)
+
+        # Cross-entropy loss
+        logits_flat = logits.reshape(-1, self.vocab_size)
+        targets_flat = targets.reshape(-1)
+
+        log_probs = logits_flat - logits_flat.max(axis=-1, keepdims=True)
+        log_probs = log_probs - np.log(np.exp(log_probs).sum(axis=-1, keepdims=True))
+        loss = -log_probs[np.arange(len(targets_flat)), targets_flat].mean()
+
+        # Gradient of loss w.r.t. logits
+        probs = softmax(logits_flat, -1)
+        dlogits_flat = probs.copy()
+        dlogits_flat[np.arange(len(targets_flat)), targets_flat] -= 1
+        dlogits_flat = dlogits_flat / (B * T)
+        dlogits = dlogits_flat.reshape(B, T, self.vocab_size)
+
+        # Backward
+        g = self.backward(dlogits, c)
+
+        # Adam update
+        beta1, beta2, eps = 0.9, 0.999, 1e-8
+        for k in self.p:
+            self._m[k] = beta1 * self._m[k] + (1 - beta1) * g[k]
+            self._v[k] = beta2 * self._v[k] + (1 - beta2) * (g[k] ** 2)
+            m_hat = self._m[k] / (1 - beta1 ** self.t)
+            v_hat = self._v[k] / (1 - beta2 ** self.t)
+            self.p[k] -= lr * m_hat / (np.sqrt(v_hat) + eps)
+
+        return float(loss)
+
+    # --------------------------------------------------------- generate
+
+    def generate(self, input_tokens, max_new=20, temperature=1.0, top_k=20):
+        """Genera tokens dado contexto.
+        input_tokens: list[int]
+        returns: list[int] (solo tokens nuevos)
+        """
+        generated = list(input_tokens)
+        for _ in range(max_new):
+            ctx = generated[-self.max_seq:]
+            tokens_arr = np.array([ctx], dtype=np.int64)
+            logits = self.forward(tokens_arr)
+            logits_last = logits[0, -1, :] / temperature
+
+            if top_k > 0:
+                idxs = np.argpartition(-logits_last, top_k)[:top_k]
+                vals = logits_last[idxs]
+                probs = softmax(vals)
+                choice = np.random.choice(idxs, p=probs)
+            else:
+                probs = softmax(logits_last)
+                choice = np.random.choice(self.vocab_size, p=probs)
+
+            generated.append(int(choice))
+            if choice == 3:  # <eos>
+                break
+
+        return generated[len(input_tokens):]
+
+    # ------------------------------------------------------- save/load
+
+    def guardar(self, ruta=None):
+        ruta = ruta or RUTA_MODELO
+        np.savez_compressed(ruta, **self.p)
+        with open(ruta.replace('.npz', '_adam.pkl'), 'wb') as f:
+            pickle.dump({'m': self._m, 'v': self._v, 't': self.t}, f)
+
+    def cargar(self, ruta=None):
+        ruta = ruta or RUTA_MODELO
+        if not os.path.exists(ruta):
+            return False
+        data = np.load(ruta)
+        for k in data.files:
+            self.p[k] = data[k]
+        adam_ruta = ruta.replace('.npz', '_adam.pkl')
+        if os.path.exists(adam_ruta):
+            with open(adam_ruta, 'rb') as f:
+                d = pickle.load(f)
+            self._m = d['m']
+            self._v = d['v']
+            self.t = d['t']
+        self.vocab_size = self.p['W_out'].shape[1]
+        self.d_model = self.p['tok_emb'].shape[1]
+        return True
+
+
+# ===================================================================
+# Cargar datos de entrenamiento
+# ===================================================================
+
+def _extraer_definiciones(datos):
+    textos = []
+    if isinstance(datos, dict):
+        for key, val in datos.items():
+            if isinstance(val, dict):
+                defs = val.get('definiciones') or val.get('definicion')
+                if isinstance(defs, list):
+                    for d in defs:
+                        if isinstance(d, str):
+                            textos.append(d)
+                elif isinstance(defs, str):
+                    textos.append(defs)
+                for v in val.values():
+                    if isinstance(v, str) and len(v) > 20:
+                        textos.append(v)
+            elif isinstance(val, str) and len(val) > 20:
+                textos.append(val)
+    elif isinstance(datos, list):
+        for item in datos:
+            if isinstance(item, str):
+                textos.append(item)
+    return textos
+
+
+def _texto_de_json(archivo):
+    ruta = os.path.join(RUTA_DATOS, archivo)
+    if not os.path.exists(ruta):
+        return []
+    with open(ruta, encoding='utf-8') as f:
+        datos = json.load(f)
+    return _extraer_definiciones(datos)
+
+
+def _cargar_textos():
+    textos = []
+    # Quijote
+    ruta_q = os.path.join(RUTA_DATOS, 'quijote.txt')
+    if os.path.exists(ruta_q):
+        with open(ruta_q, encoding='utf-8') as f:
+            textos.append(f.read())
+    # RAE
+    textos.extend(_texto_de_json('rae_diccionario.json'))
+    # Identidad
+    ruta_id = os.path.join(RUTA_DATOS, 'identidad_byte.txt')
+    if os.path.exists(ruta_id):
+        with open(ruta_id, encoding='utf-8') as f:
+            textos.append(f.read())
+    return textos
+
+
+def _crear_secuencias(tokens, seq_len=32):
+    """Crea pares (entrada, target) a partir de lista de tokens."""
+    xs, ys = [], []
+    for i in range(0, len(tokens) - seq_len, seq_len // 2):
+        x = tokens[i:i + seq_len]
+        y = tokens[i + 1:i + seq_len + 1]
+        if len(x) == seq_len:
+            xs.append(x)
+            ys.append(y)
+    return np.array(xs, dtype=np.int64), np.array(ys, dtype=np.int64)
+
+
+# ===================================================================
+# Entrenamiento
+# ===================================================================
+
+def entrenar(vocab_size=8000, d_model=64, n_heads=2, n_layers=2,
+             d_ff=256, max_seq=32, lr=3e-4, epochs=5, batch_size=32):
+    print("=== Entrenamiento Transformer Byte ===")
+    print(f"  Dimensiones: d_model={d_model}, n_heads={n_heads}, n_layers={n_layers}")
+    print(f"  Vocab size: {vocab_size}, max_seq: {max_seq}")
+    t0 = time.time()
+
+    # Cargar textos
+    print("\n1. Cargando textos...")
+    textos = _cargar_textos()
+    print(f"  {len(textos)} textos, {sum(len(t) for t in textos)} bytes total")
+
+    # Construir o cargar vocabulario
+    print("\n2. Construyendo vocabulario...")
+    vocab = Vocabulario.cargar()
+    if vocab is None:
+        vocab = Vocabulario.desde_textos(textos, max_size=vocab_size, min_freq=1)
+        vocab.guardar()
+    print(f"  {vocab.size} palabras en vocabulario")
+
+    # Tokenizar todos los textos
+    print("\n3. Tokenizando...")
+    todos_tokens = []
+    for texto in textos:
+        palabras = Vocabulario._tokenizar(texto)
+        todos_tokens.extend(vocab.encode(palabras))
+    print(f"  {len(todos_tokens)} tokens totales")
+
+    # Crear secuencias
+    print("\n4. Creando secuencias de entrenamiento...")
+    xs, ys = _crear_secuencias(todos_tokens, max_seq)
+    n_muestras = len(xs)
+    print(f"  {n_muestras} secuencias de {max_seq} tokens")
+
+    if n_muestras == 0:
+        print("  ERROR: No hay datos de entrenamiento!")
+        return None
+
+    # Inicializar modelo
+    print(f"\n5. Inicializando transformer...")
+    model = Transformer(
+        vocab_size=vocab.size,
+        d_model=d_model,
+        n_heads=n_heads,
+        n_layers=n_layers,
+        d_ff=d_ff,
+        max_seq=max_seq,
+        lr=lr,
+    )
+
+    # Cargar si existe
+    if model.cargar():
+        print("  Modelo existente cargado, continuando entrenamiento...")
+
+    # Entrenar
+    print(f"\n6. Entrenando ({epochs} epochs, batch_size={batch_size}, lr={lr})...")
+    pasos_por_epoch = max(1, n_muestras // batch_size)
+    mejor_loss = float('inf')
+
+    for epoch in range(epochs):
+        # Shuffle
+        idx = np.random.permutation(n_muestras)
+        losses = []
+        ep_t0 = time.time()
+
+        for paso in range(pasos_por_epoch):
+            batch_idx = idx[paso * batch_size:(paso + 1) * batch_size]
+            bx = xs[batch_idx]
+            by = ys[batch_idx]
+
+            loss = model.train_step(bx, by)
+            losses.append(loss)
+
+            if (paso + 1) % 100 == 0:
+                print(f"    epoch {epoch+1}/{epochs}, paso {paso+1}/{pasos_por_epoch}, "
+                      f"loss={loss:.4f}", flush=True)
+
+        loss_avg = np.mean(losses)
+        ep_t = time.time() - ep_t0
+        print(f"  epoch {epoch+1}/{epochs}: loss={loss_avg:.4f} "
+              f"({ep_t:.1f}s, {ep_t/max(1,pasos_por_epoch):.3f}s/paso)")
+
+        if loss_avg < mejor_loss:
+            mejor_loss = loss_avg
+            model.guardar()
+            print(f"    -> modelo guardado (loss={loss_avg:.4f})")
+
+    t_total = time.time() - t0
+    print(f"\n=== Entrenamiento completado en {t_total:.1f}s ===")
+    print(f"  Mejor loss: {mejor_loss:.4f}")
+    print(f"  Modelo: {RUTA_MODELO}")
+    print(f"  Vocabulario: {RUTA_VOCAB}")
+
+    # Demo
+    print("\n--- Demo de generacion ---")
+    prompt = ['el', 'ingenioso', 'hidalgo']
+    ids = [vocab.stoi.get(p, vocab.stoi.get('<unk>', 0)) for p in prompt]
+    nuevos = model.generate(ids, max_new=20, temperature=0.8)
+    todas_ids = ids + nuevos
+    print(f"  Prompt: {' '.join(prompt)}")
+    print(f"  Generado: {vocab.a_texto(todas_ids)}")
+
+    return model
+
+
+# ===================================================================
+# Main
+# ===================================================================
+
+if __name__ == '__main__':
+    import sys
+    # Parametros desde CLI: python transformer.py [epochs] [d_model] [n_layers]
+    epochs = int(sys.argv[1]) if len(sys.argv) > 1 else 5
+    d_model = int(sys.argv[2]) if len(sys.argv) > 2 else 64
+    n_layers = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+    entrenar(epochs=epochs, d_model=d_model, n_layers=n_layers)

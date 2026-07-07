@@ -170,7 +170,7 @@ class Generador:
             pal.append(w3)
         return ' '.join(pal)
 
-    def responder(self, entrada):
+    def responder(self, entrada, contexto=''):
         toks = self.tokenizar(entrada)
         if not toks or all(len(t) <= 2 for t in toks):
             toks = ['hola']

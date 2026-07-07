@@ -288,12 +288,10 @@ def main(descargar=True):
     cur = conn.execute("SELECT SUM(freq) FROM ngramas")
     total_freq = cur.fetchone()[0]
     conn.close()
-    total4 = 0
-
     t = time.time() - t0
     print(f"\n--- Entrenamiento completado ---")
     print(f"  {total_unique} trigramas")
-    print(f"  {total4} 4-gramas")
+    print(f"  0 4-gramas")
     print(f"  {unicas} palabras distintas en w1")
     print(f"  Suma frecuencias: {total_freq}")
     print(f"  DB: {RUTA_DB}")

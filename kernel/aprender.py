@@ -87,15 +87,15 @@ def descargar_gutenberg():
     """Descarga algunos libros en español desde Project Gutenberg."""
     libros = [
         ('https://www.gutenberg.org/cache/epub/2000/pg2000.txt', 'quijote.txt'),
-        ('https://www.gutenberg.org/cache/epub/16031/pg16031.txt', 'lazarillo.txt'),
-        ('https://www.gutenberg.org/cache/epub/17177/pg17177.txt', 'celestina.txt'),
-        ('https://www.gutenberg.org/cache/epub/7966/pg7966.txt', 'don_juan_tenorio.txt'),
-        ('https://www.gutenberg.org/cache/epub/14668/pg14668.txt', 'el_si_de_las_ninas.txt'),
-        ('https://www.gutenberg.org/cache/epub/47993/pg47993.txt', 'marianela.txt'),
-        ('https://www.gutenberg.org/cache/epub/47994/pg47994.txt', 'dona_perfecta.txt'),
-        ('https://www.gutenberg.org/cache/epub/10723/pg10723.txt', 'sombrero_tres_picos.txt'),
-        ('https://www.gutenberg.org/cache/epub/1969/pg1969.txt', 'la_regenta.txt'),
-        ('https://www.gutenberg.org/cache/epub/17090/pg17090.txt', 'estudiante_salamanca.txt'),
+        ('https://www.gutenberg.org/cache/epub/320/pg320.txt', 'lazarillo.txt'),
+        ('https://www.gutenberg.org/cache/epub/1619/pg1619.txt', 'celestina.txt'),
+        ('https://www.gutenberg.org/cache/epub/5201/pg5201.txt', 'don_juan_tenorio.txt'),
+        ('https://www.gutenberg.org/cache/epub/50027/pg50027.txt', 'el_si_de_las_ninas.txt'),
+        ('https://www.gutenberg.org/cache/epub/17340/pg17340.txt', 'marianela.txt'),
+        ('https://www.gutenberg.org/cache/epub/15725/pg15725.txt', 'dona_perfecta.txt'),
+        ('https://www.gutenberg.org/cache/epub/29506/pg29506.txt', 'sombrero_tres_picos.txt'),
+        ('https://www.gutenberg.org/cache/epub/17073/pg17073.txt', 'la_regenta.txt'),
+        ('https://www.gutenberg.org/cache/epub/15781/pg15781.txt', 'estudiante_salamanca.txt'),
     ]
     textos = []
     for url, nombre in libros:

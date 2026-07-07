@@ -216,39 +216,7 @@ def main(descargar=True):
 
     libros = descargar_gutenberg() if descargar else []
 
-    usar_subtitulos = '--subtitles' in sys.argv
-    subs_ruta = os.path.join(RUTA, 'subtitulos_es.txt')
-    if not os.path.exists(subs_ruta):
-        partes = sorted([p for p in os.listdir(RUTA) if p.startswith('subt_')])
-        if partes:
-            print(f"  Recombinando {len(partes)} partes...")
-            with open(subs_ruta, 'wb') as out:
-                for p in partes:
-                    with open(os.path.join(RUTA, p), 'rb') as f:
-                        out.write(f.read())
-            print(f"  Subtitulos recombindo: {os.path.getsize(subs_ruta)} bytes")
-    lineas_conv = []  # reutilizado en paso 7
-    if usar_subtitulos and os.path.exists(subs_ruta):
-        with open(subs_ruta, encoding='utf-8') as f:
-            lineas_sub = f.read().splitlines()
-        lineas_filt = []
-        for l in lineas_sub:
-            l = l.strip()
-            if not l or l.startswith('[') or len(l) < 8: continue
-            has_tilde = bool(re.search(r'[áéíóúñ¿¡]', l.lower()))
-            words = re.findall(r'[a-záéíóúñ]+', l.lower())
-            if not has_tilde and words:
-                eng_w = sum(1 for w in words if w in _ENG)
-                esp_w = sum(1 for w in words if w in _ESP)
-                if eng_w > 0 and eng_w >= esp_w:
-                    continue
-            lineas_filt.append(l)
-        subtitulos = '\n'.join(lineas_filt)
-        lineas_conv = lineas_filt  # guardar para paso 7
-        print(f"  Subtítulos: {len(subtitulos)} bytes ({len(lineas_filt)}/{len(lineas_sub)} líneas)")
-        libros.append(subtitulos)
-    elif not usar_subtitulos:
-        print("  Subtítulos: desactivados (usa --subtitles para incluirlos)")
+    print("  Subtítulos: eliminados")
 
     # Identidad de Byte: frases repetidas para que aprenda quién es
     id_ruta = os.path.join(RUTA, 'identidad_byte.txt')
@@ -320,61 +288,7 @@ def main(descargar=True):
     cur = conn.execute("SELECT SUM(freq) FROM ngramas")
     total_freq = cur.fetchone()[0]
     conn.close()
-
     total4 = 0
-
-    #
-    # 7. Tabla de conversaciones (pares línea→respuesta)
-    #
-    print("\n7. Construyendo tabla de conversaciones...")
-    conn = sqlite3.connect(RUTA_DB)
-    conn.execute("PRAGMA synchronous=OFF")
-    conn.execute("PRAGMA journal_mode=MEMORY")
-    conn.execute("PRAGMA cache_size=100000")
-    conn.execute("""CREATE TABLE conversaciones(
-        id INTEGER PRIMARY KEY,
-        linea TEXT, respuesta TEXT, clave TEXT
-    )""")
-    conn.execute("CREATE INDEX idx_clave ON conversaciones(clave)")
-    if lineas_conv:
-        batch_conv = []
-        ult_valida = None
-        for l in lineas_conv:
-            if ult_valida:
-                clave = ''
-                for w in limpiar(ult_valida).split():
-                    if len(w) >= 4:
-                        clave = w
-                        break
-                if clave:
-                    batch_conv.append((ult_valida, l, clave))
-                    if len(batch_conv) >= 50000:
-                        conn.executemany(
-                            "INSERT INTO conversaciones(linea,respuesta,clave) VALUES (?,?,?)",
-                            batch_conv)
-                        batch_conv = []
-            ult_valida = l
-        if batch_conv:
-            conn.executemany(
-                "INSERT INTO conversaciones(linea,respuesta,clave) VALUES (?,?,?)",
-                batch_conv)
-        conn.commit()
-        cur = conn.execute("SELECT COUNT(*) FROM conversaciones")
-        total_conv = cur.fetchone()[0]
-        print(f"  {total_conv} pares de conversación")
-
-        # FTS5 para búsqueda rápida de texto completo
-        try:
-            conn.execute("CREATE VIRTUAL TABLE c_fts USING fts5(linea, respuesta)")
-            conn.execute("INSERT INTO c_fts SELECT linea, respuesta FROM conversaciones")
-            conn.commit()
-            print("  Índice FTS5 creado")
-        except Exception as e:
-            print(f"  FTS5 no disponible ({e}), usando LIKE")
-    else:
-        print(f"  subtitulos_es.txt no encontrado, 0 pares")
-
-    conn.close()
 
     t = time.time() - t0
     print(f"\n--- Entrenamiento completado ---")

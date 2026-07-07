@@ -478,11 +478,6 @@ def _cargar_textos():
             textos.append(f.read())
     # RAE
     textos.extend(_texto_de_json('rae_diccionario.json'))
-    # Identidad
-    ruta_id = os.path.join(RUTA_DATOS, 'identidad_byte.txt')
-    if os.path.exists(ruta_id):
-        with open(ruta_id, encoding='utf-8') as f:
-            textos.append(f.read())
     return textos
 
 

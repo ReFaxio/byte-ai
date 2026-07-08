@@ -414,14 +414,18 @@ def _extraer_definiciones_rae(datos):
     return textos
 
 
-def _rutas_textos():
-    """Devuelve lista de rutas a archivos de texto para entrenar."""
+def _rutas_textos(rapido=False):
+    """Devuelve lista de rutas a archivos de texto para entrenar.
+    rapido=True: omite archivos mayores a 100MB."""
     rutas = []
     rae_ruta = os.path.join(RUTA_DATOS, 'rae_diccionario.json')
     if os.path.exists(rae_ruta):
         rutas.append(rae_ruta)
     import glob
     for ruta in sorted(glob.glob(os.path.join(RUTA_DATOS, 'wiki_parte_*.txt'))):
+        if rapido and os.path.getsize(ruta) > 100 * 1048576:
+            print(f"  Omitido (rapido): {os.path.basename(ruta)} ({os.path.getsize(ruta)//1048576}MB)")
+            continue
         rutas.append(ruta)
     return rutas
 
@@ -455,13 +459,15 @@ def _iterar_textos(rutas, max_chunk=50*1048576):
 # ===================================================================
 
 def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
-             d_ff=512, max_seq=64, lr=3e-4, epochs=5, batch_size=32):
+             d_ff=512, max_seq=64, lr=3e-4, epochs=5, batch_size=32, rapido=False):
     print("=== Entrenamiento Transformer Byte ===")
     print(f"  Dimensiones: d_model={d_model}, n_heads={n_heads}, n_layers={n_layers}")
     print(f"  Vocab size: {vocab_size}, max_seq: {max_seq}")
+    if rapido:
+        print("  Modo rapido: solo archivos <100MB")
     t0 = time.time()
 
-    rutas = _rutas_textos()
+    rutas = _rutas_textos(rapido)
     print(f"\n1. Archivos de entrenamiento: {len(rutas)}")
     for r in rutas:
         tam = os.path.getsize(r)
@@ -562,7 +568,9 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
 
 if __name__ == '__main__':
     import sys
-    epochs = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-    d_model = int(sys.argv[2]) if len(sys.argv) > 2 else 128
-    n_layers = int(sys.argv[3]) if len(sys.argv) > 3 else 4
-    entrenar(epochs=epochs, d_model=d_model, n_layers=n_layers)
+    rapido = '--rapido' in sys.argv
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    epochs = int(args[0]) if len(args) > 0 else 5
+    d_model = int(args[1]) if len(args) > 1 else 128
+    n_layers = int(args[2]) if len(args) > 2 else 4
+    entrenar(epochs=epochs, d_model=d_model, n_layers=n_layers, rapido=rapido)

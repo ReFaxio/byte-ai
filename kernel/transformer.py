@@ -420,10 +420,9 @@ def _rutas_textos():
     rae_ruta = os.path.join(RUTA_DATOS, 'rae_diccionario.json')
     if os.path.exists(rae_ruta):
         rutas.append(rae_ruta)
-    for i in range(16):
-        ruta = os.path.join(RUTA_DATOS, f'wiki_parte_{i}.txt')
-        if os.path.exists(ruta):
-            rutas.append(ruta)
+    import glob
+    for ruta in sorted(glob.glob(os.path.join(RUTA_DATOS, 'wiki_parte_*.txt'))):
+        rutas.append(ruta)
     return rutas
 
 

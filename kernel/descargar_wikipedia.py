@@ -8,7 +8,7 @@ import xml.parsers.expat
 
 RUTA = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datos')
 URL = 'https://dumps.wikimedia.org/eswiki/latest/eswiki-latest-pages-articles.xml.bz2'
-PARTES = 16
+PARTES = 64
 
 # ---------------------------------------------------------------------------
 # Limpiar marcado Wikipedia
@@ -73,7 +73,7 @@ class EscritorPartes:
         palabras = texto.split()
         self.tokens_esta += len(palabras)
         self.archivo.write(texto + '\n\n')
-        if self.tokens_esta >= self.max_tokens_por_parte and self.parte_actual < PARTES - 1:
+        if self.tokens_esta >= self.max_tokens_por_parte:
             self.archivo.close()
             print(f'  Parte {self.parte_actual} guardada ({self.tokens_esta} tokens)', flush=True)
             self.parte_actual += 1

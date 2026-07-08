@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Descarga y extrae texto de Wikipedia en español.
-Dump oficial: ~600MB bz2, ~3GB texto.
+Dump oficial: ~5GB bz2, ~20GB texto.
 Sin dependencias — solo stdlib + bz2 + xml.parsers.expat."""
 
 import bz2, os, re, sys, time, urllib.request
@@ -18,49 +18,33 @@ def limpiar_wiki(texto):
     """Elimina marcado MediaWiki, solo deja texto plano."""
     if not texto:
         return ''
-    # Quitar referencias
     texto = re.sub(r'<ref[^>]*>.*?</ref>', '', texto, flags=re.DOTALL)
     texto = re.sub(r'<ref[^>]*/>', '', texto)
-    # Quitar comments
     texto = re.sub(r'<!--.*?-->', '', texto, flags=re.DOTALL)
-    # Quitar {{...}} (plantillas, infoboxes, etc.)
     texto = re.sub(r'\{\{[^}]*?\}\}', '', texto)
-    # Quitar [[]] dobles: [[Target|Text]] -> Text, [[Target]] -> Target
     texto = re.sub(r'\[\[([^|\]]*?)\]\]', r'\1', texto)
     texto = re.sub(r'\[\[[^|\]]*?\|([^\]]*?)\]\]', r'\1', texto)
-    # Quitar '' y ''' (itálica y negrita)
     texto = texto.replace("'''", '').replace("''", '')
-    # Quitar ===== headings =====
     texto = re.sub(r'^=+[^=]+=+\s*$', '', texto, flags=re.MULTILINE)
-    # Quitar etiquetas HTML sobrantes
     texto = re.sub(r'<[^>]+>', '', texto)
-    # Quitar enlaces externos [url text] -> text
     texto = re.sub(r'\[https?://[^\]]*? ([^\]]*?)\]', r'\1', texto)
     texto = re.sub(r'\[https?://[^\]]*?\]', '', texto)
-    # Quitar categorías
     texto = re.sub(r'\[\[Categoría:[^\]]*?\]\]', '', texto)
     texto = re.sub(r'\[\[Category:[^\]]*?\]\]', '', texto)
-    # Quitar archivos e imágenes
     texto = re.sub(r'\[\[(Archivo|File|Imagen|Image):[^\]]*?\]\]', '', texto)
-    # Quitar bloques de código
     texto = re.sub(r'<code>.*?</code>', '', texto, flags=re.DOTALL)
     texto = re.sub(r'<pre>.*?</pre>', '', texto, flags=re.DOTALL)
-    # Líneas que empiezan con {| |} (tablas wiki)
     texto = re.sub(r'^[\|\{\}!].*$', '', texto, flags=re.MULTILINE)
-    # Múltiples espacios y líneas vacías
     texto = re.sub(r'\n\s*\n', '\n', texto)
     texto = re.sub(r'  +', ' ', texto)
     return texto.strip()
 
 
 def es_valido(texto):
-    """Filtra páginas vacías, cortas, o de contenido no útil."""
     if len(texto) < 100:
         return False
-    # Saltar páginas de desambiguación
     if texto.startswith('desambiguación') or 'puede referirse a' in texto[:200]:
         return False
-    # Saltar listas de episodios, personajes ficticios, etc.
     if re.match(r'^(Anexo|Lista|Episodio)s?(:| )', texto):
         return False
     return True
@@ -71,8 +55,6 @@ def es_valido(texto):
 # ---------------------------------------------------------------------------
 
 class EscritorPartes:
-    """Divide el texto extraído en PARTES archivos."""
-
     def __init__(self):
         self.parte_actual = 0
         self.tokens_esta = 0
@@ -108,8 +90,6 @@ class EscritorPartes:
 # ---------------------------------------------------------------------------
 
 class WikiParser:
-    """Parser SAX del dump de Wikipedia."""
-
     def __init__(self, escritor):
         self.escritor = escritor
         self.en_text = False
@@ -123,7 +103,7 @@ class WikiParser:
         self.total_extraidas = 0
 
     def start_tag(self, name, attrs):
-        name = name.split('}')[-1]  # quitar namespace xmlns
+        name = name.split('}')[-1]
         if name == 'text':
             self.en_text = True
             self.texto_actual = []
@@ -154,10 +134,6 @@ class WikiParser:
             self.profundidad_text -= 1
 
     def char_data(self, data):
-        if self.en_text and self.profundidad_text == 0:
-            # Solo texto directo dentro de <text>, no en sub-elementos
-            # En realidad todo el contenido de <text> es texto plano en Wikipedia dumps
-            pass
         if self.en_text:
             self.texto_actual.append(data)
         if self.en_title:
@@ -168,7 +144,6 @@ class WikiParser:
     def _procesar_texto(self):
         texto_raw = ''.join(self.texto_actual)
         ns = ''.join(self.ns_actual).strip()
-        # Solo namespace 0 (artículos)
         if ns != '0':
             return
         texto_limpio = limpiar_wiki(texto_raw)
@@ -181,11 +156,10 @@ def descargar_y_extraer():
     """Descarga el dump y extrae texto plano en partes."""
     t0 = time.time()
 
-    # 1. Descargar
     ruta_dump = os.path.join(RUTA, 'eswiki.xml.bz2')
     if not os.path.exists(ruta_dump):
         print(f'Descargando {URL}...')
-        print('  (~600MB, puede tomar varios minutos)')
+        print('  (~5GB, puede tomar varios minutos)')
         req = urllib.request.Request(URL, headers={'User-Agent': 'Byte/4.0'})
         with urllib.request.urlopen(req, timeout=300) as r:
             total = int(r.headers.get('Content-Length', 0))
@@ -205,7 +179,6 @@ def descargar_y_extraer():
         tam = os.path.getsize(ruta_dump)
         print(f'  Usando dump existente: {tam//1048576}MB', flush=True)
 
-    # 2. Extraer
     print(f'\nExtrayendo texto de Wikipedia (partes={PARTES})...')
     escritor = EscritorPartes()
     parser = WikiParser(escritor)
@@ -216,8 +189,7 @@ def descargar_y_extraer():
     p.CharacterDataHandler = parser.char_data
 
     with bz2.open(ruta_dump, 'rb') as f:
-        # Leer en chunks para no saturar RAM
-        chunk_size = 1048576 * 4  # 4MB
+        chunk_size = 1048576 * 4
         leido = 0
         tam = os.path.getsize(ruta_dump)
         while True:
@@ -239,7 +211,6 @@ def descargar_y_extraer():
     print(f'  {parser.total_extraidas} artículos extraídos')
     print(f'  Archivos: {RUTA}/wiki_parte_0..{PARTES-1}.txt')
 
-    # Limpiar dump
     os.remove(ruta_dump)
     print('  Dump eliminado')
 

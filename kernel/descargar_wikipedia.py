@@ -7,7 +7,7 @@ import bz2, os, re, sys, time, urllib.request
 import xml.parsers.expat
 
 RUTA = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datos')
-URL = 'https://dumps.wikimedia.org/eswiki/latest/eswiki-latest-pages-articles-multistream.xml.bz2'
+URL = 'https://dumps.wikimedia.org/eswiki/latest/eswiki-latest-pages-articles.xml.bz2'
 PARTES = 16
 
 # ---------------------------------------------------------------------------

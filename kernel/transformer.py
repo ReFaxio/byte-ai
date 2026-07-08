@@ -479,16 +479,15 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
     # Tokenizar y crear secuencias en streaming (sin guardar tokens completos)
     print("\n3. Tokenizando y creando secuencias...")
     stride = max_seq // 2
-    todas_xs = []
-    todas_ys = []
+    seq_temp = os.path.join(RUTA_DATOS, '_seq_temp.npy')
     total_tokens = 0
+    n_seq_total = 0
     for texto in _iterar_textos(rutas):
         palabras = Vocabulario._tokenizar(texto)
         if not palabras:
             continue
         ids = vocab.encode(palabras)
         total_tokens += len(ids)
-        # Crear secuencias de este trozo
         n_local = (len(ids) - max_seq) // stride
         if n_local > 0:
             xs_local = np.zeros((n_local, max_seq), dtype=np.int64)
@@ -497,22 +496,37 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
                 start = i * stride
                 xs_local[i] = np.array(ids[start:start + max_seq], dtype=np.int64)
                 ys_local[i] = np.array(ids[start + 1:start + max_seq + 1], dtype=np.int64)
-            todas_xs.append(xs_local)
-            todas_ys.append(ys_local)
+            # Guardar en disco inmediatamente
+            modo = 'wb' if n_seq_total == 0 else 'ab'
+            with open(seq_temp, modo) as sf:
+                np.save(sf, np.concatenate([xs_local, ys_local], axis=-1))
+            n_seq_total += n_local
+            del xs_local, ys_local
         if total_tokens % 5000000 == 0:
             print(f"  {total_tokens//1000000}M tokens procesados, "
-                  f"{sum(len(x) for x in todas_xs)} secuencias...", flush=True)
+                  f"{n_seq_total} secuencias...", flush=True)
 
-    if not todas_xs:
+    if n_seq_total == 0:
         print("  ERROR: No hay datos!")
         return None
-    xs = np.concatenate(todas_xs)
-    ys = np.concatenate(todas_ys)
-    del todas_xs, todas_ys
-    n_seq = len(xs)
-    print(f"  {total_tokens//1000000}M tokens, {n_seq} secuencias de {max_seq}")
-    if n_seq == 10:
-        print("  ADVERTENCIA: muy pocas secuencias, el modelo no aprendera bien")
+
+    # Cargar secuencias desde disco con memmap
+    print(f"  Cargando {n_seq_total} secuencias desde disco...")
+    seq_arr = np.zeros((n_seq_total, max_seq * 2), dtype=np.int64)
+    offset = 0
+    with open(seq_temp, 'rb') as sf:
+        while True:
+            try:
+                chunk = np.load(sf)
+                n_local = len(chunk)
+                seq_arr[offset:offset + n_local] = chunk
+                offset += n_local
+            except (ValueError, EOFError):
+                break
+    xs = seq_arr[:, :max_seq]
+    ys = seq_arr[:, max_seq:]
+    os.remove(seq_temp)
+    print(f"  {total_tokens//1000000}M tokens, {n_seq_total} secuencias de {max_seq}")
 
     # Inicializar modelo
     print(f"\n5. Inicializando transformer...")

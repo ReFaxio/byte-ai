@@ -58,7 +58,7 @@ class Vocabulario:
         return len(self.itos)
 
     @classmethod
-    def desde_textos(cls, textos, max_size=8000, min_freq=2):
+    def desde_textos(cls, textos, max_size=16000, min_freq=2):
         c = Counter()
         for texto in textos:
             for pal in Vocabulario._tokenizar(texto):
@@ -116,8 +116,8 @@ class Vocabulario:
 # ===================================================================
 
 class Transformer:
-    def __init__(self, vocab_size=8000, d_model=64, n_heads=2,
-                 n_layers=2, d_ff=256, max_seq=32, lr=1e-3):
+    def __init__(self, vocab_size=16000, d_model=128, n_heads=4,
+                 n_layers=4, d_ff=512, max_seq=64, lr=3e-4):
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.n_heads = n_heads
@@ -163,11 +163,6 @@ class Transformer:
     # ------------------------------------------------------------ forward
 
     def forward(self, tokens, c=None):
-        """Forward pass con cache.
-        tokens: (B, T) int64
-        c: dict opcional para guardar activaciones (necesario para backward)
-        returns: logits (B, T, V)
-        """
         B, T = tokens.shape
         p = self.p
         save = c is not None
@@ -232,31 +227,21 @@ class Transformer:
     # ----------------------------------------------------------- backward
 
     def backward(self, dlogits, c):
-        """Backward pass completo.
-        dlogits: (B, T, V) gradiente de loss w.r.t. logits
-        returns: dict gradientes
-        """
         p = self.p
         g = {k: np.zeros_like(v) for k, v in p.items()}
         B, T = dlogits.shape[:2]
 
-        # Output projection
         dx = dlogits @ p['W_out'].T
         g['W_out'] = c['x_final'].reshape(-1, self.d_model).T @ dlogits.reshape(-1, self.vocab_size)
         g['b_out'] = dlogits.sum(axis=(0, 1)).astype(np.float32)
 
-        # Final layer norm
         dx, g['ln_f_g'], g['ln_f_b'] = layer_norm_bwd(
             dx, c['x_final'], p['ln_f_g'], p['ln_f_b'])
 
         for i in reversed(range(self.n_layers)):
-            # ---- FFN sublayer ----
-            # forward: x2 = res2 + o_ffn
-            # dx starts as dL/dx2
-            d_o_ffn = dx  # from x2 = res2 + o_ffn
+            d_o_ffn = dx
             d_res2 = dx
 
-            # FFN: o_ffn = relu(x_ln2 @ W1 + b1) @ W2 + b2
             d_h_relu = d_o_ffn @ p[f'W_2_{i}'].T
             g[f'W_2_{i}'] = c[f'h_relu_{i}'].reshape(-1, self.d_ff).T @ d_o_ffn.reshape(-1, self.d_model)
             g[f'b_2_{i}'] = d_o_ffn.sum(axis=(0, 1)).astype(np.float32)
@@ -266,29 +251,19 @@ class Transformer:
             g[f'b_1_{i}'] = d_h.sum(axis=(0, 1)).astype(np.float32)
 
             d_x_ln2 = d_h @ p[f'W_1_{i}'].T
-
-            # Layer norm backward for FFN
             d_via_ln, g[f'ln2_g_{i}'], g[f'ln2_b_{i}'] = layer_norm_bwd(
                 d_x_ln2, c[f'x_ln2_{i}'], p[f'ln2_g_{i}'], p[f'ln2_b_{i}'])
-
-            # Residual: dx2 = d_res2 + d_via_ln
             dx = d_res2 + d_via_ln
 
-            # ---- Attention sublayer ----
-            # forward: x1 = res1 + o_attn
             d_o_attn = dx
             d_res1 = dx
 
-            # W_o projection: o_attn = o_before @ W_o
             g[f'W_o_{i}'] = c[f'o_{i}'].reshape(-1, self.d_model).T @ d_o_attn.reshape(-1, self.d_model)
             d_o_before = d_o_attn @ p[f'W_o_{i}'].T
 
-            # Reshape back to head form
             nh, dk = self.n_heads, self.d_k
             d_o_h = d_o_before.reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
 
-            # Attention backward: o_h = a @ v
-            # Get v in head form
             v = c[f'v_{i}']
             v_h = v.reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
             a = c[f'a_{i}']
@@ -296,38 +271,30 @@ class Transformer:
             d_a = d_o_h @ v_h.transpose(0, 1, 3, 2)
             d_v_h = a.transpose(0, 1, 3, 2) @ d_o_h
 
-            # Softmax backward: a = softmax(s)
             s = c[f's_{i}']
             d_s = a * (d_a - (a * d_a).sum(axis=-1, keepdims=True))
 
-            # Score backward: s = q_h @ k_h^T / sqrt(dk)
             q_h = c[f'q_{i}'].reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
             k_h = c[f'k_{i}'].reshape(B, T, nh, dk).transpose(0, 2, 1, 3)
 
             d_q_h = d_s @ k_h / np.sqrt(dk)
             d_k_h = d_s.transpose(0, 1, 3, 2) @ q_h / np.sqrt(dk)
 
-            # Reshape gradients back to (B, T, D)
             d_q = d_q_h.transpose(0, 2, 1, 3).reshape(B, T, self.d_model)
             d_k = d_k_h.transpose(0, 2, 1, 3).reshape(B, T, self.d_model)
             d_v = d_v_h.transpose(0, 2, 1, 3).reshape(B, T, self.d_model)
 
-            # QKV projection gradients
             x_ln1 = c[f'x_ln1_{i}']
             g[f'W_q_{i}'] = x_ln1.reshape(-1, self.d_model).T @ d_q.reshape(-1, self.d_model)
             g[f'W_k_{i}'] = x_ln1.reshape(-1, self.d_model).T @ d_k.reshape(-1, self.d_model)
             g[f'W_v_{i}'] = x_ln1.reshape(-1, self.d_model).T @ d_v.reshape(-1, self.d_model)
 
-            # Gradient through QKV to layer norm input
             d_via_qkv = (d_q @ p[f'W_q_{i}'].T +
                          d_k @ p[f'W_k_{i}'].T +
                          d_v @ p[f'W_v_{i}'].T)
 
-            # Layer norm backward for attention
             d_via_ln, g[f'ln1_g_{i}'], g[f'ln1_b_{i}'] = layer_norm_bwd(
                 d_via_qkv, c[f'x_ln1_{i}'], p[f'ln1_g_{i}'], p[f'ln1_b_{i}'])
-
-            # Residual: dx1 = d_res1 + d_via_ln
             dx = d_res1 + d_via_ln
 
         return g
@@ -335,11 +302,6 @@ class Transformer:
     # ----------------------------------------------------------- train
 
     def train_step(self, tokens, targets, lr=None):
-        """Un paso de entrenamiento.
-        tokens: (B, T) int64 — entrada
-        targets: (B, T) int64 — target (next token)
-        returns: loss (float)
-        """
         B, T = tokens.shape
         lr = lr or self.lr
         self.t += 1
@@ -347,7 +309,6 @@ class Transformer:
         c = {}
         logits = self.forward(tokens, c)
 
-        # Cross-entropy loss
         logits_flat = logits.reshape(-1, self.vocab_size)
         targets_flat = targets.reshape(-1)
 
@@ -355,17 +316,14 @@ class Transformer:
         log_probs = log_probs - np.log(np.exp(log_probs).sum(axis=-1, keepdims=True))
         loss = -log_probs[np.arange(len(targets_flat)), targets_flat].mean()
 
-        # Gradient of loss w.r.t. logits
         probs = softmax(logits_flat, -1)
         dlogits_flat = probs.copy()
         dlogits_flat[np.arange(len(targets_flat)), targets_flat] -= 1
         dlogits_flat = dlogits_flat / (B * T)
         dlogits = dlogits_flat.reshape(B, T, self.vocab_size)
 
-        # Backward
         g = self.backward(dlogits, c)
 
-        # Adam update
         beta1, beta2, eps = 0.9, 0.999, 1e-8
         for k in self.p:
             self._m[k] = beta1 * self._m[k] + (1 - beta1) * g[k]
@@ -379,10 +337,6 @@ class Transformer:
     # --------------------------------------------------------- generate
 
     def generate(self, input_tokens, max_new=20, temperature=1.0, top_k=20):
-        """Genera tokens dado contexto.
-        input_tokens: list[int]
-        returns: list[int] (solo tokens nuevos)
-        """
         generated = list(input_tokens)
         for _ in range(max_new):
             ctx = generated[-self.max_seq:]
@@ -400,7 +354,7 @@ class Transformer:
                 choice = np.random.choice(self.vocab_size, p=probs)
 
             generated.append(int(choice))
-            if choice == 3:  # <eos>
+            if choice == 3:
                 break
 
         return generated[len(input_tokens):]
@@ -433,10 +387,10 @@ class Transformer:
 
 
 # ===================================================================
-# Cargar datos de entrenamiento
+# Cargar datos
 # ===================================================================
 
-def _extraer_definiciones(datos):
+def _extraer_definiciones_rae(datos):
     textos = []
     if isinstance(datos, dict):
         for key, val in datos.items():
@@ -460,42 +414,35 @@ def _extraer_definiciones(datos):
     return textos
 
 
-def _texto_de_json(archivo):
-    ruta = os.path.join(RUTA_DATOS, archivo)
-    if not os.path.exists(ruta):
-        return []
-    with open(ruta, encoding='utf-8') as f:
-        datos = json.load(f)
-    return _extraer_definiciones(datos)
-
-
-def _cargar_textos():
-    textos = []
-    # RAE
-    textos.extend(_texto_de_json('rae_diccionario.json'))
-    # Wikipedia (archivos parte)
+def _rutas_textos():
+    """Devuelve lista de rutas a archivos de texto para entrenar."""
+    rutas = []
+    rae_ruta = os.path.join(RUTA_DATOS, 'rae_diccionario.json')
+    if os.path.exists(rae_ruta):
+        rutas.append(rae_ruta)
     for i in range(16):
         ruta = os.path.join(RUTA_DATOS, f'wiki_parte_{i}.txt')
         if os.path.exists(ruta):
+            rutas.append(ruta)
+    return rutas
+
+
+def _iterar_textos(rutas):
+    """Generador: produce texto de cada ruta una a una."""
+    for ruta in rutas:
+        if ruta.endswith('.json'):
+            import json
             with open(ruta, encoding='utf-8') as f:
-                textos.append(f.read())
-    return textos
-
-
-def _crear_secuencias(tokens, seq_len=32):
-    """Crea pares (entrada, target) a partir de lista de tokens."""
-    xs, ys = [], []
-    for i in range(0, len(tokens) - seq_len, seq_len // 2):
-        x = tokens[i:i + seq_len]
-        y = tokens[i + 1:i + seq_len + 1]
-        if len(x) == seq_len:
-            xs.append(x)
-            ys.append(y)
-    return np.array(xs, dtype=np.int64), np.array(ys, dtype=np.int64)
+                datos = json.load(f)
+            for texto in _extraer_definiciones_rae(datos):
+                yield texto
+        else:
+            with open(ruta, encoding='utf-8') as f:
+                yield f.read()
 
 
 # ===================================================================
-# Entrenamiento
+# Entrenamiento eficiente en RAM
 # ===================================================================
 
 def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
@@ -505,35 +452,48 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
     print(f"  Vocab size: {vocab_size}, max_seq: {max_seq}")
     t0 = time.time()
 
-    # Cargar textos
-    print("\n1. Cargando textos...")
-    textos = _cargar_textos()
-    print(f"  {len(textos)} textos, {sum(len(t) for t in textos)} bytes total")
+    rutas = _rutas_textos()
+    print(f"\n1. Archivos de entrenamiento: {len(rutas)}")
+    for r in rutas:
+        tam = os.path.getsize(r)
+        print(f"    {os.path.basename(r)}: {tam//1048576}MB")
 
-    # Construir o cargar vocabulario
+    # Vocabulario
     print("\n2. Construyendo vocabulario...")
     vocab = Vocabulario.cargar()
     if vocab is None:
-        vocab = Vocabulario.desde_textos(textos, max_size=vocab_size, min_freq=1)
+        vocab = Vocabulario.desde_textos(_iterar_textos(rutas), max_size=vocab_size, min_freq=1)
         vocab.guardar()
     print(f"  {vocab.size} palabras en vocabulario")
 
-    # Tokenizar todos los textos
-    print("\n3. Tokenizando...")
-    todos_tokens = []
-    for texto in textos:
+    # Tokenizar y crear secuencias en streaming
+    print("\n3. Tokenizando y creando secuencias...")
+    todos_tokens = np.array([], dtype=np.int32)
+    for texto in _iterar_textos(rutas):
         palabras = Vocabulario._tokenizar(texto)
-        todos_tokens.extend(vocab.encode(palabras))
+        ids = vocab.encode(palabras)
+        todos_tokens = np.append(todos_tokens, np.array(ids, dtype=np.int32))
+        if len(todos_tokens) % 1000000 == 0:
+            print(f"  {len(todos_tokens)//1000000}M tokens...", flush=True)
+
     print(f"  {len(todos_tokens)} tokens totales")
 
     # Crear secuencias
-    print("\n4. Creando secuencias de entrenamiento...")
-    xs, ys = _crear_secuencias(todos_tokens, max_seq)
-    n_muestras = len(xs)
-    print(f"  {n_muestras} secuencias de {max_seq} tokens")
-
-    if n_muestras == 0:
-        print("  ERROR: No hay datos de entrenamiento!")
+    print(f"\n4. Creando secuencias de {max_seq} tokens...")
+    n = len(todos_tokens)
+    stride = max_seq // 2
+    n_seq = (n - max_seq) // stride
+    xs = np.zeros((n_seq, max_seq), dtype=np.int64)
+    ys = np.zeros((n_seq, max_seq), dtype=np.int64)
+    for i in range(n_seq):
+        start = i * stride
+        xs[i] = todos_tokens[start:start + max_seq].astype(np.int64)
+        ys[i] = todos_tokens[start + 1:start + max_seq + 1].astype(np.int64)
+    # Liberar memoria del token array
+    del todos_tokens
+    print(f"  {n_seq} secuencias")
+    if n_seq == 0:
+        print("  ERROR: No hay datos!")
         return None
 
     # Inicializar modelo
@@ -547,19 +507,16 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
         max_seq=max_seq,
         lr=lr,
     )
-
-    # Cargar si existe
     if model.cargar():
-        print("  Modelo existente cargado, continuando entrenamiento...")
+        print("  Modelo existente cargado, continuando...")
 
     # Entrenar
     print(f"\n6. Entrenando ({epochs} epochs, batch_size={batch_size}, lr={lr})...")
-    pasos_por_epoch = max(1, n_muestras // batch_size)
+    pasos_por_epoch = max(1, n_seq // batch_size)
     mejor_loss = float('inf')
 
     for epoch in range(epochs):
-        # Shuffle
-        idx = np.random.permutation(n_muestras)
+        idx = np.random.permutation(n_seq)
         losses = []
         ep_t0 = time.time()
 
@@ -567,29 +524,27 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
             batch_idx = idx[paso * batch_size:(paso + 1) * batch_size]
             bx = xs[batch_idx]
             by = ys[batch_idx]
-
             loss = model.train_step(bx, by)
             losses.append(loss)
 
             if (paso + 1) % 100 == 0:
+                avg = np.mean(losses[-100:]) if len(losses) >= 100 else np.mean(losses)
                 print(f"    epoch {epoch+1}/{epochs}, paso {paso+1}/{pasos_por_epoch}, "
-                      f"loss={loss:.4f}", flush=True)
+                      f"loss={avg:.4f}", flush=True)
 
-        loss_avg = np.mean(losses)
+        loss_avg = float(np.mean(losses))
         ep_t = time.time() - ep_t0
         print(f"  epoch {epoch+1}/{epochs}: loss={loss_avg:.4f} "
-              f"({ep_t:.1f}s, {ep_t/max(1,pasos_por_epoch):.3f}s/paso)")
+              f"({ep_t:.1f}s, {ep_t/max(1,pasos_por_epoch):.3f}s/paso)", flush=True)
 
         if loss_avg < mejor_loss:
             mejor_loss = loss_avg
             model.guardar()
-            print(f"    -> modelo guardado (loss={loss_avg:.4f})")
+            print(f"    -> modelo guardado (loss={loss_avg:.4f})", flush=True)
 
     t_total = time.time() - t0
     print(f"\n=== Entrenamiento completado en {t_total:.1f}s ===")
     print(f"  Mejor loss: {mejor_loss:.4f}")
-    print(f"  Modelo: {RUTA_MODELO}")
-    print(f"  Vocabulario: {RUTA_VOCAB}")
 
     # Demo
     print("\n--- Demo de generacion ---")
@@ -598,18 +553,13 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
     nuevos = model.generate(ids, max_new=20, temperature=0.8)
     todas_ids = ids + nuevos
     print(f"  Prompt: {' '.join(prompt)}")
-    print(f"  Generado: {vocab.a_texto(todas_ids)}")
+    print(f"  Generado: {vocab.a_texto(todas_ids)}", flush=True)
 
     return model
 
 
-# ===================================================================
-# Main
-# ===================================================================
-
 if __name__ == '__main__':
     import sys
-    # python transformer.py [epochs] [d_model] [n_layers]
     epochs = int(sys.argv[1]) if len(sys.argv) > 1 else 5
     d_model = int(sys.argv[2]) if len(sys.argv) > 2 else 128
     n_layers = int(sys.argv[3]) if len(sys.argv) > 3 else 4

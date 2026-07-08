@@ -475,12 +475,14 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
         vocab.guardar()
     print(f"  {vocab.size} palabras en vocabulario")
 
-    # Tokenizar y crear secuencias en streaming (sin guardar tokens completos)
+    # Tokenizar y crear secuencias en streaming
     print("\n3. Tokenizando y creando secuencias...")
     stride = max_seq // 2
-    seq_temp = os.path.join(RUTA_DATOS, '_seq_temp.npy')
+    temp_dir = os.path.join(RUTA_DATOS, '_seq_temp')
+    os.makedirs(temp_dir, exist_ok=True)
     total_tokens = 0
     n_seq_total = 0
+    chunk_idx = 0
     for texto in _iterar_textos(rutas):
         palabras = Vocabulario._tokenizar(texto)
         if not palabras:
@@ -495,12 +497,11 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
                 start = i * stride
                 xs_local[i] = np.array(ids[start:start + max_seq], dtype=np.int64)
                 ys_local[i] = np.array(ids[start + 1:start + max_seq + 1], dtype=np.int64)
-            # Guardar en disco inmediatamente
-            modo = 'wb' if n_seq_total == 0 else 'ab'
-            with open(seq_temp, modo) as sf:
-                np.save(sf, np.concatenate([xs_local, ys_local], axis=-1))
+            # Guardar cada chunk como archivo separado
+            chunk_path = os.path.join(temp_dir, f'seq_{chunk_idx}.npy')
+            np.save(chunk_path, np.concatenate([xs_local, ys_local], axis=-1))
+            chunk_idx += 1
             n_seq_total += n_local
-            del xs_local, ys_local
         if total_tokens % 5000000 == 0:
             print(f"  {total_tokens//1000000}M tokens procesados, "
                   f"{n_seq_total} secuencias...", flush=True)
@@ -509,22 +510,19 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
         print("  ERROR: No hay datos!")
         return None
 
-    # Cargar secuencias desde disco con memmap
-    print(f"  Cargando {n_seq_total} secuencias desde disco...")
+    # Cargar todas las secuencias y concatenar
+    print(f"  Cargando {n_seq_total} secuencias...")
     seq_arr = np.zeros((n_seq_total, max_seq * 2), dtype=np.int64)
     offset = 0
-    with open(seq_temp, 'rb') as sf:
-        while True:
-            try:
-                chunk = np.load(sf)
-                n_local = len(chunk)
-                seq_arr[offset:offset + n_local] = chunk
-                offset += n_local
-            except (ValueError, EOFError):
-                break
+    for ci in range(chunk_idx):
+        chunk_path = os.path.join(temp_dir, f'seq_{ci}.npy')
+        data = np.load(chunk_path)
+        seq_arr[offset:offset + len(data)] = data
+        offset += len(data)
+        os.remove(chunk_path)
+    os.rmdir(temp_dir)
     xs = seq_arr[:, :max_seq]
     ys = seq_arr[:, max_seq:]
-    os.remove(seq_temp)
     print(f"  {total_tokens//1000000}M tokens, {n_seq_total} secuencias de {max_seq}")
 
     # Inicializar modelo

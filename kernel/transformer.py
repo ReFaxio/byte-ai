@@ -427,8 +427,8 @@ def _rutas_textos():
     return rutas
 
 
-def _iterar_textos(rutas):
-    """Generador: produce texto de cada ruta una a una."""
+def _iterar_textos(rutas, max_chunk=50*1048576):
+    """Generador: produce texto de cada ruta en trozos de max_chunk bytes."""
     for ruta in rutas:
         if ruta.endswith('.json'):
             import json
@@ -437,8 +437,18 @@ def _iterar_textos(rutas):
             for texto in _extraer_definiciones_rae(datos):
                 yield texto
         else:
-            with open(ruta, encoding='utf-8') as f:
-                yield f.read()
+            tam = os.path.getsize(ruta)
+            if tam <= max_chunk:
+                with open(ruta, encoding='utf-8') as f:
+                    yield f.read()
+            else:
+                # Archivos grandes: leer en trozos de max_chunk
+                with open(ruta, encoding='utf-8') as f:
+                    while True:
+                        trozo = f.read(max_chunk)
+                        if not trozo:
+                            break
+                        yield trozo
 
 
 # ===================================================================
@@ -466,35 +476,43 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
         vocab.guardar()
     print(f"  {vocab.size} palabras en vocabulario")
 
-    # Tokenizar y crear secuencias en streaming
+    # Tokenizar y crear secuencias en streaming (sin guardar tokens completos)
     print("\n3. Tokenizando y creando secuencias...")
-    todos_tokens = np.array([], dtype=np.int32)
+    stride = max_seq // 2
+    todas_xs = []
+    todas_ys = []
+    total_tokens = 0
     for texto in _iterar_textos(rutas):
         palabras = Vocabulario._tokenizar(texto)
+        if not palabras:
+            continue
         ids = vocab.encode(palabras)
-        todos_tokens = np.append(todos_tokens, np.array(ids, dtype=np.int32))
-        if len(todos_tokens) % 1000000 == 0:
-            print(f"  {len(todos_tokens)//1000000}M tokens...", flush=True)
+        total_tokens += len(ids)
+        # Crear secuencias de este trozo
+        n_local = (len(ids) - max_seq) // stride
+        if n_local > 0:
+            xs_local = np.zeros((n_local, max_seq), dtype=np.int64)
+            ys_local = np.zeros((n_local, max_seq), dtype=np.int64)
+            for i in range(n_local):
+                start = i * stride
+                xs_local[i] = np.array(ids[start:start + max_seq], dtype=np.int64)
+                ys_local[i] = np.array(ids[start + 1:start + max_seq + 1], dtype=np.int64)
+            todas_xs.append(xs_local)
+            todas_ys.append(ys_local)
+        if total_tokens % 5000000 == 0:
+            print(f"  {total_tokens//1000000}M tokens procesados, "
+                  f"{sum(len(x) for x in todas_xs)} secuencias...", flush=True)
 
-    print(f"  {len(todos_tokens)} tokens totales")
-
-    # Crear secuencias
-    print(f"\n4. Creando secuencias de {max_seq} tokens...")
-    n = len(todos_tokens)
-    stride = max_seq // 2
-    n_seq = (n - max_seq) // stride
-    xs = np.zeros((n_seq, max_seq), dtype=np.int64)
-    ys = np.zeros((n_seq, max_seq), dtype=np.int64)
-    for i in range(n_seq):
-        start = i * stride
-        xs[i] = todos_tokens[start:start + max_seq].astype(np.int64)
-        ys[i] = todos_tokens[start + 1:start + max_seq + 1].astype(np.int64)
-    # Liberar memoria del token array
-    del todos_tokens
-    print(f"  {n_seq} secuencias")
-    if n_seq == 0:
+    if not todas_xs:
         print("  ERROR: No hay datos!")
         return None
+    xs = np.concatenate(todas_xs)
+    ys = np.concatenate(todas_ys)
+    del todas_xs, todas_ys
+    n_seq = len(xs)
+    print(f"  {total_tokens//1000000}M tokens, {n_seq} secuencias de {max_seq}")
+    if n_seq == 10:
+        print("  ADVERTENCIA: muy pocas secuencias, el modelo no aprendera bien")
 
     # Inicializar modelo
     print(f"\n5. Inicializando transformer...")

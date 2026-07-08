@@ -227,14 +227,6 @@ def main(descargar=True):
 
     print("  Subtítulos: eliminados")
 
-    # Identidad de Byte: texto plano, sin repetición
-    id_ruta = os.path.join(RUTA, 'identidad_byte.txt')
-    if os.path.exists(id_ruta):
-        with open(id_ruta, encoding='utf-8') as f:
-            identidad = f.read()
-        print(f"  Identidad Byte: {len(identidad)} bytes")
-        libros.append(identidad)
-
     print(f"  Textos libros: {len(libros)}")
 
     print("\n2. Contando n-gramas de definiciones...")

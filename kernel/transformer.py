@@ -475,58 +475,8 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
         vocab.guardar()
     print(f"  {vocab.size} palabras en vocabulario")
 
-    # Tokenizar y crear secuencias en streaming
-    print("\n3. Tokenizando y creando secuencias...")
-    stride = max_seq // 2
-    temp_dir = os.path.join(RUTA_DATOS, '_seq_temp')
-    os.makedirs(temp_dir, exist_ok=True)
-    total_tokens = 0
-    n_seq_total = 0
-    chunk_idx = 0
-    for texto in _iterar_textos(rutas):
-        palabras = Vocabulario._tokenizar(texto)
-        if not palabras:
-            continue
-        ids = vocab.encode(palabras)
-        total_tokens += len(ids)
-        n_local = (len(ids) - max_seq) // stride
-        if n_local > 0:
-            xs_local = np.zeros((n_local, max_seq), dtype=np.int64)
-            ys_local = np.zeros((n_local, max_seq), dtype=np.int64)
-            for i in range(n_local):
-                start = i * stride
-                xs_local[i] = np.array(ids[start:start + max_seq], dtype=np.int64)
-                ys_local[i] = np.array(ids[start + 1:start + max_seq + 1], dtype=np.int64)
-            # Guardar cada chunk como archivo separado
-            chunk_path = os.path.join(temp_dir, f'seq_{chunk_idx}.npy')
-            np.save(chunk_path, np.concatenate([xs_local, ys_local], axis=-1))
-            chunk_idx += 1
-            n_seq_total += n_local
-        if total_tokens % 5000000 == 0:
-            print(f"  {total_tokens//1000000}M tokens procesados, "
-                  f"{n_seq_total} secuencias...", flush=True)
-
-    if n_seq_total == 0:
-        print("  ERROR: No hay datos!")
-        return None
-
-    # Cargar todas las secuencias y concatenar
-    print(f"  Cargando {n_seq_total} secuencias...")
-    seq_arr = np.zeros((n_seq_total, max_seq * 2), dtype=np.int64)
-    offset = 0
-    for ci in range(chunk_idx):
-        chunk_path = os.path.join(temp_dir, f'seq_{ci}.npy')
-        data = np.load(chunk_path)
-        seq_arr[offset:offset + len(data)] = data
-        offset += len(data)
-        os.remove(chunk_path)
-    os.rmdir(temp_dir)
-    xs = seq_arr[:, :max_seq]
-    ys = seq_arr[:, max_seq:]
-    print(f"  {total_tokens//1000000}M tokens, {n_seq_total} secuencias de {max_seq}")
-
-    # Inicializar modelo
-    print(f"\n5. Inicializando transformer...")
+    # Inicializar modelo (antes de procesar datos, para liberar RAM)
+    print(f"\n3. Inicializando transformer...")
     model = Transformer(
         vocab_size=vocab.size,
         d_model=d_model,
@@ -539,34 +489,57 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
     if model.cargar():
         print("  Modelo existente cargado, continuando...")
 
-    # Entrenar
-    print(f"\n6. Entrenando ({epochs} epochs, batch_size={batch_size}, lr={lr})...")
-    pasos_por_epoch = max(1, n_seq // batch_size)
+    # Entrenamiento streaming por chunks
+    stride = max_seq // 2
+    print(f"\n4. Entrenando ({epochs} epochs, batch_size={batch_size})...")
+    print("  Modo streaming: cada chunk se entrena y descarta.")
     mejor_loss = float('inf')
 
     for epoch in range(epochs):
-        idx = np.random.permutation(n_seq)
         losses = []
         ep_t0 = time.time()
+        tokens_epoca = 0
+        pasos_epoca = 0
 
-        for paso in range(pasos_por_epoch):
-            batch_idx = idx[paso * batch_size:(paso + 1) * batch_size]
-            bx = xs[batch_idx]
-            by = ys[batch_idx]
-            loss = model.train_step(bx, by)
-            losses.append(loss)
+        for texto in _iterar_textos(rutas):
+            palabras = Vocabulario._tokenizar(texto)
+            if not palabras:
+                continue
+            ids = vocab.encode(palabras)
+            tokens_epoca += len(ids)
+            n_local = (len(ids) - max_seq) // stride
+            if n_local <= 0:
+                continue
 
-            if (paso + 1) % 100 == 0:
-                avg = np.mean(losses[-100:]) if len(losses) >= 100 else np.mean(losses)
-                print(f"    epoch {epoch+1}/{epochs}, paso {paso+1}/{pasos_por_epoch}, "
-                      f"loss={avg:.4f}", flush=True)
+            # Crear array de secuencias para este chunk
+            xs_local = np.zeros((n_local, max_seq), dtype=np.int64)
+            ys_local = np.zeros((n_local, max_seq), dtype=np.int64)
+            for i in range(n_local):
+                start = i * stride
+                xs_local[i] = np.array(ids[start:start + max_seq], dtype=np.int64)
+                ys_local[i] = np.array(ids[start + 1:start + max_seq + 1], dtype=np.int64)
 
-        loss_avg = float(np.mean(losses))
+            # Entrenar este chunk en batches
+            for bstart in range(0, n_local, batch_size):
+                bend = min(bstart + batch_size, n_local)
+                bx = xs_local[bstart:bend]
+                by = ys_local[bstart:bend]
+                loss = model.train_step(bx, by)
+                losses.append(loss)
+                pasos_epoca += 1
+
+                if pasos_epoca % 200 == 0:
+                    avg = float(np.mean(losses[-200:]))
+                    print(f"    e{epoch+1} paso {pasos_epoca} loss={avg:.4f}",
+                          flush=True)
+
+        loss_avg = float(np.mean(losses)) if losses else 0
         ep_t = time.time() - ep_t0
         print(f"  epoch {epoch+1}/{epochs}: loss={loss_avg:.4f} "
-              f"({ep_t:.1f}s, {ep_t/max(1,pasos_por_epoch):.3f}s/paso)", flush=True)
+              f"({tokens_epoca//1000000}M tokens, {pasos_epoca} pasos, "
+              f"{ep_t:.1f}s)", flush=True)
 
-        if loss_avg < mejor_loss:
+        if losses and loss_avg < mejor_loss:
             mejor_loss = loss_avg
             model.guardar()
             print(f"    -> modelo guardado (loss={loss_avg:.4f})", flush=True)

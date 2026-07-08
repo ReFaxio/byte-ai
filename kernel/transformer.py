@@ -1,6 +1,6 @@
 """Transformer puro numpy — 0 if/else, 0 texto fijo.
-Arquitectura: 2 capas, 2 cabezas, dim 64, ventana 32.
-Corre 100% en CPU, <100MB RAM entrenando, <10MB infiriendo.
+Arquitectura: 4 capas, 4 cabezas, dim 128, ventana 64.
+Corre 100% en CPU, <200MB RAM entrenando, <20MB infiriendo.
 Meta: superar GPT/Claude/DeepSeek."""
 
 import numpy as np
@@ -471,13 +471,14 @@ def _texto_de_json(archivo):
 
 def _cargar_textos():
     textos = []
-    # Quijote
-    ruta_q = os.path.join(RUTA_DATOS, 'quijote.txt')
-    if os.path.exists(ruta_q):
-        with open(ruta_q, encoding='utf-8') as f:
-            textos.append(f.read())
     # RAE
     textos.extend(_texto_de_json('rae_diccionario.json'))
+    # Wikipedia (archivos parte)
+    for i in range(16):
+        ruta = os.path.join(RUTA_DATOS, f'wiki_parte_{i}.txt')
+        if os.path.exists(ruta):
+            with open(ruta, encoding='utf-8') as f:
+                textos.append(f.read())
     return textos
 
 
@@ -497,8 +498,8 @@ def _crear_secuencias(tokens, seq_len=32):
 # Entrenamiento
 # ===================================================================
 
-def entrenar(vocab_size=8000, d_model=64, n_heads=2, n_layers=2,
-             d_ff=256, max_seq=32, lr=3e-4, epochs=5, batch_size=32):
+def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
+             d_ff=512, max_seq=64, lr=3e-4, epochs=5, batch_size=32):
     print("=== Entrenamiento Transformer Byte ===")
     print(f"  Dimensiones: d_model={d_model}, n_heads={n_heads}, n_layers={n_layers}")
     print(f"  Vocab size: {vocab_size}, max_seq: {max_seq}")
@@ -592,7 +593,7 @@ def entrenar(vocab_size=8000, d_model=64, n_heads=2, n_layers=2,
 
     # Demo
     print("\n--- Demo de generacion ---")
-    prompt = ['el', 'ingenioso', 'hidalgo']
+    prompt = ['la', 'inteligencia', 'artificial']
     ids = [vocab.stoi.get(p, vocab.stoi.get('<unk>', 0)) for p in prompt]
     nuevos = model.generate(ids, max_new=20, temperature=0.8)
     todas_ids = ids + nuevos
@@ -608,8 +609,8 @@ def entrenar(vocab_size=8000, d_model=64, n_heads=2, n_layers=2,
 
 if __name__ == '__main__':
     import sys
-    # Parametros desde CLI: python transformer.py [epochs] [d_model] [n_layers]
+    # python transformer.py [epochs] [d_model] [n_layers]
     epochs = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-    d_model = int(sys.argv[2]) if len(sys.argv) > 2 else 64
-    n_layers = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+    d_model = int(sys.argv[2]) if len(sys.argv) > 2 else 128
+    n_layers = int(sys.argv[3]) if len(sys.argv) > 3 else 4
     entrenar(epochs=epochs, d_model=d_model, n_layers=n_layers)

@@ -1,0 +1,5 @@
+*.bz2
+*.txt
+vocabulario.json
+transformer_model.npz
+transformer_model_adam.pkl

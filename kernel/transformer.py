@@ -496,7 +496,7 @@ def entrenar(vocab_size=16000, d_model=128, n_heads=4, n_layers=4,
         print("  Modelo existente cargado, continuando...")
 
     # Entrenamiento streaming por chunks
-    stride = max_seq // 2
+    stride = max_seq
     print(f"\n4. Entrenando ({epochs} epochs, batch_size={batch_size})...")
     print("  Modo streaming: cada chunk se entrena y descarta.")
     mejor_loss = float('inf')

@@ -147,47 +147,40 @@ class Nucleo:
                 break
         return gen[len(input_tokens):]
 
-    def entrenar(self, textos, epochs=5, lr=0.01):
-        print("  Entrenando FFN...", flush=True)
+    def entrenar(self, textos, epochs=1, lr=0.01):
+        print("  Entrenando FFN por lotes...", flush=True)
         pasos = 0
         for epoch in range(epochs):
             losses = []
             for texto in textos:
                 pals = Vocabulario._tokenizar(texto)
-                if len(pals) < 2: continue
-                ids = self.vocab.encode(pals)
-                for i in range(len(ids) - 1):
-                    ctx = ids[max(0, i-3):i+1]
-                    if len(ctx) < 2: continue
+                if len(pals) < 8: continue
+                ids = np.array(self.vocab.encode(pals), dtype=np.int64)
+                for start in range(4, len(ids) - 1, 8):
+                    ctx = ids[start-4:start+1]
+                    target = ids[start+1]
                     arr = np.array([ctx], dtype=np.int64)
                     x = self.emb[arr].mean(axis=1)
                     h = np.maximum(0, x @ self.W_ffn1 + self.b_ffn1)
                     logits = h @ self.W_ffn2 + self.b_ffn2
                     if self.cooc is not None:
-                        logits = logits + self.cooc[arr[0, -1]] * 5.0
-                    target = ids[i+1]
-                    logits_flat = logits[0]
-                    logits_flat = logits_flat - logits_flat.max()
-                    exp_l = np.exp(logits_flat)
+                        logits = logits + self.cooc[arr[0, -1]] * 3.0
+                    logits_f = logits[0]
+                    logits_f = logits_f - logits_f.max()
+                    exp_l = np.exp(logits_f)
                     probs = exp_l / exp_l.sum()
                     loss = -np.log(probs[target] + 1e-10)
-                    dlogits = probs.copy()
-                    dlogits[target] -= 1.0
-                    d_W_ffn2 = h.reshape(-1, 1) @ dlogits.reshape(1, -1)
-                    d_b_ffn2 = dlogits
-                    d_h = dlogits @ self.W_ffn2.T
-                    d_h = d_h * (h > 0)
-                    d_W_ffn1 = (x.reshape(-1, 1) @ d_h.reshape(1, -1))
-                    d_b_ffn1 = d_h[0]
-                    self.W_ffn2 -= lr * d_W_ffn2
-                    self.b_ffn2 -= lr * d_b_ffn2
-                    self.W_ffn1 -= lr * d_W_ffn1.astype(np.float32)
-                    self.b_ffn1 -= lr * d_b_ffn1.astype(np.float32)
+                    dlog = probs.copy()
+                    dlog[target] -= 1.0
+                    self.W_ffn2 -= lr * h.reshape(-1, 1) @ dlog.reshape(1, -1)
+                    self.b_ffn2 -= lr * dlog
+                    dh = (dlog @ self.W_ffn2.T) * (h > 0)
+                    self.W_ffn1 -= lr * (x.reshape(-1, 1) @ dh.reshape(1, -1))
+                    self.b_ffn1 -= lr * dh[0]
                     losses.append(loss)
                     pasos += 1
-                    if pasos % 1000 == 0:
-                        avg = float(np.mean(losses[-1000:]))
-                        print(f"    paso {pasos} loss={avg:.4f}", flush=True)
+                    if pasos % 500 == 0:
+                        print(f"    paso {pasos} loss={np.mean(losses[-500:]):.4f}", flush=True)
             if losses:
                 print(f"  epoch {epoch+1}/{epochs} loss={np.mean(losses):.4f}", flush=True)
 
@@ -225,7 +218,7 @@ def _extraer_rae(datos):
     return textos
 
 
-def entrenar(rapido=False, epochs=3):
+def entrenar(rapido=False, epochs=1):
     print("=== Nucleo ===")
     t0 = time.time()
 

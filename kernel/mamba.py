@@ -1,15 +1,17 @@
-"""Mamba: modelo de estado SSM para Byte.
-O(n) en tiempo, sin atencion cuadratica.
-Usa embeddings y co-ocurrencia del Nucleo como inicializacion."""
+"""Mamba JAX: modelo SSM O(n) con GPU.
+Entrena en segundos en GPU, corre en CPU para inferencia.
+Sin atencion cuadratica, estado recurrente lineal."""
 
-import numpy as np
 import os, json, re, time, pickle
 from collections import Counter
+
+import jax
+import jax.numpy as jnp
+import numpy as np
 
 RUTA_DATOS = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datos')
 RUTA_MODELO = os.path.join(RUTA_DATOS, 'mamba_model.npz')
 RUTA_VOCAB = os.path.join(RUTA_DATOS, 'vocabulario.json')
-RUTA_COOC = os.path.join(RUTA_DATOS, 'cooc_mat.npy')
 
 
 class Vocabulario:
@@ -49,60 +51,130 @@ class Vocabulario:
         v=cls.__new__(cls); v.stoi=d['stoi']; v.itos=d['itos']; return v
 
 
+def init_params(vocab_size, d_model, d_state, d_ff, key):
+    s = 0.02
+    k1, k2, k3, k4, k5, k6 = jax.random.split(key, 6)
+    return {
+        'emb': jax.random.normal(k1, (vocab_size, d_model)) * s,
+        'A': jax.random.normal(k2, (d_state, d_state)) * 0.01,
+        'B': jax.random.normal(k3, (d_model, d_state)) * s,
+        'C': jax.random.normal(k4, (d_state, d_model)) * s,
+        'W_ffn1': jax.random.normal(k5, (d_model, d_ff)) * s,
+        'b_ffn1': jnp.zeros(d_ff),
+        'W_ffn2': jax.random.normal(k6, (d_ff, vocab_size)) * s,
+        'b_ffn2': jnp.zeros(vocab_size),
+    }
+
+
+def ssm_step(h, A, B, C, x_t):
+    h_new = h @ A.T + x_t @ B
+    out = h_new @ C
+    return h_new, out
+
+
+def forward(params, tokens):
+    B, T = tokens.shape
+    x = params['emb'][tokens]
+    h0 = jnp.zeros((B, params['A'].shape[0]))
+
+    def scan_fn(h, x_t):
+        h_new, out = ssm_step(h, params['A'], params['B'], params['C'], x_t)
+        return h_new, out
+
+    _, outs = jax.lax.scan(scan_fn, h0, x.transpose(1, 0, 2))
+
+    out_last = outs[-1]
+    h_f = jax.nn.relu(out_last @ params['W_ffn1'] + params['b_ffn1'])
+    logits = h_f @ params['W_ffn2'] + params['b_ffn2']
+    return logits
+
+
+def loss_fn(params, tokens, targets):
+    logits = forward(params, tokens)
+    logits_f = logits - logits.max(axis=-1, keepdims=True)
+    log_probs = logits_f - jnp.log(jnp.exp(logits_f).sum(axis=-1, keepdims=True))
+    oh = jax.nn.one_hot(targets[:, -1], logits.shape[-1])
+    return -jnp.mean((log_probs * oh).sum(axis=-1))
+
+
+@jax.jit
+def train_step(params, opt_state, t, tokens, targets):
+    loss, grads = jax.value_and_grad(loss_fn)(params, tokens, targets)
+    lr = 3e-4
+    beta1, beta2, eps = 0.9, 0.999, 1e-8
+    new_params = {}
+    new_state = {'t': t + 1}
+    for k in params:
+        m = opt_state[f'm_{k}'] * beta1 + grads[k] * (1 - beta1)
+        v = opt_state[f'v_{k}'] * beta2 + grads[k] ** 2 * (1 - beta2)
+        m_h = m / (1 - beta1 ** (t + 1))
+        v_h = v / (1 - beta2 ** (t + 1))
+        new_params[k] = params[k] - lr * m_h / (jnp.sqrt(v_h) + eps)
+        new_state[f'm_{k}'] = m
+        new_state[f'v_{k}'] = v
+    return new_params, new_state, loss
+
+
+def create_opt_state(params):
+    state = {'t': 0}
+    for k in params:
+        state[f'm_{k}'] = jnp.zeros_like(params[k])
+        state[f'v_{k}'] = jnp.zeros_like(params[k])
+    return state
+
+
 class Mamba:
     def __init__(self, vocab_size=16000, d_model=128, d_state=64, d_ff=256):
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.d_state = d_state
         self.d_ff = d_ff
-
-        s = 0.02
-        rng = np.random.RandomState(42)
-        self.emb = rng.randn(vocab_size, d_model).astype(np.float32) * s
-        self.A = rng.randn(d_state, d_state).astype(np.float32) * 0.01
-        self.B = rng.randn(d_model, d_state).astype(np.float32) * s
-        self.C = rng.randn(d_state, d_model).astype(np.float32) * s
-        self.W_ffn1 = rng.randn(d_model, d_ff).astype(np.float32) * s
-        self.b_ffn1 = np.zeros(d_ff, dtype=np.float32)
-        self.W_ffn2 = rng.randn(d_ff, vocab_size).astype(np.float32) * s
-        self.b_ffn2 = np.zeros(vocab_size, dtype=np.float32)
         self.vocab = None
 
-    def cargar_embeddings(self, ruta_nucleo):
-        d = np.load(ruta_nucleo)
-        if 'emb' in d and d['emb'].shape == self.emb.shape:
-            self.emb = d['emb']
-            print("  Embeddings cargados del Nucleo", flush=True)
+        key = jax.random.PRNGKey(42)
+        self.p = init_params(vocab_size, d_model, d_state, d_ff, key)
+        self.opt = create_opt_state(self.p)
+        self.t = 0
 
-    def forward(self, tokens_idx):
-        B, T = tokens_idx.shape
-        x = self.emb[tokens_idx]
-        h = np.zeros((B, self.d_state), dtype=np.float32)
-        for t in range(T):
+    def forward_np(self, tokens_idx):
+        x = np.array(self.p['emb'])[tokens_idx]
+        d_state = self.p['A'].shape[0]
+        h = np.zeros((1, d_state))
+        A = np.array(self.p['A'])
+        B = np.array(self.p['B'])
+        C = np.array(self.p['C'])
+        for t in range(x.shape[1]):
             inp = x[:, t, :]
-            h = h @ self.A.T + inp @ self.B
-            out = h @ self.C
-            if t == T - 1:
-                logits = out
-        logits = logits @ self.W_ffn1 + self.b_ffn1
+            h = h @ A.T + inp @ B
+            out = h @ C
+        logits = out @ np.array(self.p['W_ffn1']) + np.array(self.p['b_ffn1'])
         logits = np.maximum(0, logits)
-        logits = logits @ self.W_ffn2 + self.b_ffn2
+        logits = logits @ np.array(self.p['W_ffn2']) + np.array(self.p['b_ffn2'])
         return logits
 
     def generar(self, input_tokens, max_new=20, temperature=0.8, top_k=20):
         gen = list(input_tokens)
-        h = np.zeros((1, self.d_state), dtype=np.float32)
+        d_state = self.p['A'].shape[0]
+        h = np.zeros((1, d_state))
+        A = np.array(self.p['A'])
+        B = np.array(self.p['B'])
+        C = np.array(self.p['C'])
+        W1 = np.array(self.p['W_ffn1'])
+        b1 = np.array(self.p['b_ffn1'])
+        W2 = np.array(self.p['W_ffn2'])
+        b2 = np.array(self.p['b_ffn2'])
+        emb = np.array(self.p['emb'])
+
         for _ in range(max_new):
             ctx = gen[-64:]
-            arr = np.array([ctx], dtype=np.int64)
-            x = self.emb[arr]
+            x = emb[np.array([ctx])]
             for t in range(x.shape[1]):
                 inp = x[:, t, :]
-                h = h @ self.A.T + inp @ self.B
-                out = h @ self.C
-            logits = out @ self.W_ffn1 + self.b_ffn1
+                h = h @ A.T + inp @ B
+                out = h @ C
+            logits = out @ W1 + b1
             logits = np.maximum(0, logits)
-            logits = logits @ self.W_ffn2 + self.b_ffn2
+            logits = logits @ W2 + b2
             logits = logits[0] / temperature
             if top_k > 0:
                 idxs = np.argpartition(-logits, top_k)[:top_k]
@@ -118,83 +190,73 @@ class Mamba:
             if choice == 3: break
         return gen[len(input_tokens):]
 
-    def entrenar(self, textos, epochs=2, lr=0.001):
-        print("  Mamba entrenando...", flush=True)
+    def entrenar(self, textos, epochs=2, batch_size=64):
+        print("  Mamba JAX entrenando...", flush=True)
         pasos = 0
         for epoch in range(epochs):
             losses = []
             for texto in textos:
                 pals = Vocabulario._tokenizar(texto)
-                if len(pals) < 8: continue
-                ids = np.array(self.vocab.encode(pals), dtype=np.int64)
-                B, T = 1, len(ids)
-                x = self.emb[ids].reshape(1, T, -1)
-                h = np.zeros((1, self.d_state), dtype=np.float32)
-                for t in range(T - 1):
-                    inp = x[:, t, :]
-                    h_new = h @ self.A.T + inp @ self.B
-                    out_s = h_new @ self.C
-                    target = ids[t + 1]
-                    h_f = np.maximum(0, out_s @ self.W_ffn1 + self.b_ffn1)
-                    logits = h_f @ self.W_ffn2 + self.b_ffn2
-                    logits_f = logits[0]
-                    logits_f = logits_f - logits_f.max()
-                    exp_l = np.exp(logits_f)
-                    probs = exp_l / exp_l.sum()
-                    loss = -np.log(probs[target] + 1e-10)
-                    dlog = probs.copy()
-                    dlog[target] -= 1.0
-                    d_W_ffn2 = h_f.reshape(-1, 1) @ dlog.reshape(1, -1)
-                    d_b_ffn2 = dlog
-                    d_h_f = dlog @ self.W_ffn2.T
-                    d_h_f = d_h_f * (h_f > 0)
-                    d_W_ffn1 = out_s.T @ d_h_f
-                    d_b_ffn1 = d_h_f[0]
-                    d_out_s = d_h_f @ self.W_ffn1.T
-                    self.W_ffn2 -= lr * d_W_ffn2
-                    self.b_ffn2 -= lr * d_b_ffn2
-                    self.W_ffn1 -= lr * d_W_ffn1
-                    self.b_ffn1 -= lr * d_b_ffn1
-                    d_C = h_new.T @ d_out_s
-                    d_h = d_out_s @ self.C.T
-                    d_B = inp.T @ d_h
-                    self.C -= lr * d_C
-                    self.B -= lr * d_B
-                    h = h_new
-                    losses.append(loss)
+                if len(pals) < 2: continue
+                ids = self.vocab.encode(pals)
+                for i in range(0, len(ids) - 1):
+                    ctx = ids[max(0, i-4):i+1]
+                    if len(ctx) < 2: continue
+                    tokens_j = jnp.array([ctx], dtype=jnp.int32)
+                    targets_j = jnp.array([ids[i+1]], dtype=jnp.int32)
+                    self.p, self.opt, loss = train_step(self.p, self.opt, self.t, tokens_j, targets_j)
+                    self.t += 1
                     pasos += 1
+                    losses.append(float(loss))
                     if pasos % 500 == 0:
-                        print(f"    paso {pasos} loss={np.mean(losses[-500:]):.4f}", flush=True)
+                        avg = float(np.mean(losses[-500:]))
+                        print(f"    paso {pasos} loss={avg:.4f}", flush=True)
             if losses:
                 print(f"  epoch {epoch+1}/{epochs} loss={np.mean(losses):.4f}", flush=True)
 
     def guardar(self, ruta=None):
         ruta = ruta or RUTA_MODELO
-        np.savez_compressed(ruta, emb=self.emb, A=self.A, B=self.B, C=self.C,
-                           W_ffn1=self.W_ffn1, b_ffn1=self.b_ffn1,
-                           W_ffn2=self.W_ffn2, b_ffn2=self.b_ffn2)
+        p_np = {k: np.array(v) for k, v in self.p.items()}
+        np.savez_compressed(ruta, **p_np)
+        opt_np = {'t': self.t}
+        for k in self.p:
+            opt_np[f'm_{k}'] = np.array(self.opt[f'm_{k}'])
+            opt_np[f'v_{k}'] = np.array(self.opt[f'v_{k}'])
+        with open(ruta.replace('.npz', '_opt.pkl'), 'wb') as f:
+            pickle.dump(opt_np, f)
 
     def cargar(self, ruta=None):
         ruta = ruta or RUTA_MODELO
         if not os.path.exists(ruta): return False
-        d = np.load(ruta); self.emb=d['emb']; self.A=d['A']; self.B=d['B']; self.C=d['C']
-        self.W_ffn1=d['W_ffn1']; self.b_ffn1=d['b_ffn1']; self.W_ffn2=d['W_ffn2']; self.b_ffn2=d['b_ffn2']
+        d = np.load(ruta)
+        self.p = {k: jnp.array(d[k]) for k in d.files}
+        self.vocab_size = self.p['emb'].shape[0]
+        self.d_model = self.p['emb'].shape[1]
+        opt_ruta = ruta.replace('.npz', '_opt.pkl')
+        if os.path.exists(opt_ruta):
+            with open(opt_ruta, 'rb') as f:
+                od = pickle.load(f)
+            self.t = od.get('t', 0)
+            self.opt = {'t': self.t}
+            for k in self.p:
+                self.opt[f'm_{k}'] = jnp.array(od.get(f'm_{k}', jnp.zeros_like(self.p[k])))
+                self.opt[f'v_{k}'] = jnp.array(od.get(f'v_{k}', jnp.zeros_like(self.p[k])))
         return True
 
 
 def _extraer_rae(datos):
     textos = []
     if isinstance(datos, dict):
-        for v in datos.values():
-            if isinstance(v, dict):
-                for dv in v.values():
-                    if isinstance(dv, str) and len(dv) > 20: textos.append(dv)
-            elif isinstance(v, str) and len(v) > 20: textos.append(v)
+        for k, v in datos.items():
+            if isinstance(v, str): textos.append(f"{k} {v}")
+            elif isinstance(v, dict):
+                for sub in v.values():
+                    if isinstance(sub, str): textos.append(f"{k} {sub}")
     return textos
 
 
 def entrenar(rapido=False, epochs=2):
-    print("=== Mamba (SSM) ===")
+    print("=== Mamba JAX (GPU) ===")
     t0 = time.time()
 
     rutas = []
@@ -210,10 +272,10 @@ def entrenar(rapido=False, epochs=2):
     def iterar():
         for r in rutas:
             if r.endswith('.json'):
-                with open(r) as f:
+                with open(r, encoding='utf-8') as f:
                     for t in _extraer_rae(json.load(f)): yield t
             else:
-                with open(r) as f:
+                with open(r, encoding='utf-8') as f:
                     while True:
                         chunk = f.read(10*1048576)
                         if not chunk: break
@@ -226,14 +288,12 @@ def entrenar(rapido=False, epochs=2):
         vocab.guardar()
     print(f"    {vocab.size} palabras")
 
+    print("  Dispositivo:", jax.devices()[0].platform, flush=True)
+
     m = Mamba(vocab_size=vocab.size)
     m.vocab = vocab
     if m.cargar():
-        print("  Modelo Mamba cargado")
-    else:
-        ruta_nucleo = os.path.join(RUTA_DATOS, 'nucleo_model.npz')
-        if os.path.exists(ruta_nucleo):
-            m.cargar_embeddings(ruta_nucleo)
+        print("  Modelo cargado")
 
     m.entrenar(iterar(), epochs=epochs)
     m.guardar()

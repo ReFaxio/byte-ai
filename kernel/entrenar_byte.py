@@ -1,6 +1,5 @@
 """Byte: entrenamiento completo con Mamba + Wikipedia + RAE.
-Corre este script cuando la descarga de Wikipedia termine.
-Un solo comando: python kernel/entrenar_byte.py"""
+Corre en GPU (Colab) o CPU."""
 
 import sys, os, glob, json, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -55,7 +54,7 @@ def main():
         print("  Nuevo modelo")
 
     print("\n--- Entrenando ---")
-    m.entrenar(iterar_textos(), epochs=2, lr=0.001)
+    m.entrenar(iterar_textos(), epochs=2)
     m.guardar()
 
     t = time.time() - t0

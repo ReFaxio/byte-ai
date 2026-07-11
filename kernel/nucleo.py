@@ -248,7 +248,10 @@ def entrenar(rapido=False, epochs=3):
                         yield t
             else:
                 with open(r, encoding='utf-8') as f:
-                    yield f.read()
+                    while True:
+                        chunk = f.read(10*1048576)
+                        if not chunk: break
+                        yield chunk
 
     print("  Vocabulario...")
     vocab = Vocabulario.cargar()

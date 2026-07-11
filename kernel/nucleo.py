@@ -279,5 +279,6 @@ def entrenar(rapido=False, epochs=3):
 
 
 if __name__ == '__main__':
+    import sys
     rapido = '--rapido' in sys.argv
     entrenar(rapido=rapido)

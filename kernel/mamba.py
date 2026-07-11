@@ -132,11 +132,11 @@ class Mamba:
                 h = np.zeros((1, self.d_state), dtype=np.float32)
                 for t in range(T - 1):
                     inp = x[:, t, :]
-                    h_nuevo = h @ self.A.T + inp @ self.B
-                    out = h_nuevo @ self.C
+                    h_new = h @ self.A.T + inp @ self.B
+                    out_s = h_new @ self.C
                     target = ids[t + 1]
-                    logits = np.maximum(0, out @ self.W_ffn1 + self.b_ffn1)
-                    logits = logits @ self.W_ffn2 + self.b_ffn2
+                    h_f = np.maximum(0, out_s @ self.W_ffn1 + self.b_ffn1)
+                    logits = h_f @ self.W_ffn2 + self.b_ffn2
                     logits_f = logits[0]
                     logits_f = logits_f - logits_f.max()
                     exp_l = np.exp(logits_f)
@@ -144,23 +144,23 @@ class Mamba:
                     loss = -np.log(probs[target] + 1e-10)
                     dlog = probs.copy()
                     dlog[target] -= 1.0
-                    dh = dlog @ self.W_ffn2.T
-                    dh = dh * (np.maximum(0, out @ self.W_ffn1 + self.b_ffn1) > 0)
-                    d_W_ffn2 = out.T @ dlog.reshape(1, -1)
+                    d_W_ffn2 = h_f.reshape(-1, 1) @ dlog.reshape(1, -1)
                     d_b_ffn2 = dlog
-                    d_W_ffn1 = out.T @ dh
-                    d_b_ffn1 = dh[0]
-                    d_out = dh @ self.W_ffn1.T
+                    d_h_f = dlog @ self.W_ffn2.T
+                    d_h_f = d_h_f * (h_f > 0)
+                    d_W_ffn1 = out_s.T @ d_h_f
+                    d_b_ffn1 = d_h_f[0]
+                    d_out_s = d_h_f @ self.W_ffn1.T
                     self.W_ffn2 -= lr * d_W_ffn2
                     self.b_ffn2 -= lr * d_b_ffn2
                     self.W_ffn1 -= lr * d_W_ffn1
                     self.b_ffn1 -= lr * d_b_ffn1
-                    d_C = h_nuevo.T @ d_out
-                    d_h = d_out @ self.C.T
+                    d_C = h_new.T @ d_out_s
+                    d_h = d_out_s @ self.C.T
                     d_B = inp.T @ d_h
                     self.C -= lr * d_C
                     self.B -= lr * d_B
-                    h = h_nuevo
+                    h = h_new
                     losses.append(loss)
                     pasos += 1
                     if pasos % 500 == 0:

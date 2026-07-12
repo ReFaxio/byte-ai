@@ -20,18 +20,22 @@ def iterar_textos():
                 for sub in v.values():
                     if isinstance(sub, str): texto_rae.append(f"{k} {sub}")
         yield ' '.join(texto_rae)
-    for r in sorted(glob.glob(os.path.join(RUTA_DATOS, 'wiki_parte_*.txt'))):
-        if os.path.getsize(r) > 100e6:
-            print(f"  Archivo grande incluido: {os.path.basename(r)} ({os.path.getsize(r)//1048576}MB)")
-            with open(r, encoding='utf-8') as f:
-                while True:
-                    chunk = f.read(50*1048576)
-                    if not chunk: break
-                    yield chunk
-        else:
-            print(f"  Leyendo {os.path.basename(r)}...", flush=True)
-            with open(r, encoding='utf-8') as f:
-                yield f.read()
+    archivos = sorted(glob.glob(os.path.join(RUTA_DATOS, 'wiki_parte_*.txt')))
+    for i in range(0, len(archivos), 50):
+        grupo = archivos[i:i+50]
+        print(f"  Procesando wikis {i}-{i+len(grupo)-1}...", flush=True)
+        texto = []
+        for r in grupo:
+            if os.path.getsize(r) > 100e6:
+                with open(r, encoding='utf-8') as f:
+                    while True:
+                        chunk = f.read(50*1048576)
+                        if not chunk: break
+                        texto.append(chunk)
+            else:
+                with open(r, encoding='utf-8') as f:
+                    texto.append(f.read())
+        yield ' '.join(texto)
 
 def main():
     t0 = time.time()

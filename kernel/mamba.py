@@ -28,13 +28,12 @@ class Vocabulario:
             for pal in cls._tokenizar(texto): c[pal] += 1
         comunes = [p for p,_ in c.most_common(max_size-4) if _ >= min_freq]
         return cls(['<pad>','<unk>','<bos>','<eos>'] + comunes)
+    _tabla = str.maketrans('áéíóúüÁÉÍÓÚÜ', 'aeiouuAEIOUU')
+    _re_no_word = re.compile(r'[^a-zñ ]')
     @staticmethod
     def _tokenizar(texto):
         if not texto: return []
-        texto = texto.lower()
-        for a,b in [('á','a'),('é','e'),('í','i'),('ó','o'),('ú','u'),('ü','u')]:
-            texto = texto.replace(a,b)
-        return re.sub(r'[^a-zñ ]',' ',texto).split()
+        return Vocabulario._re_no_word.sub(' ', texto.lower().translate(Vocabulario._tabla)).split()
     def encode(self, palabras):
         unk=self.stoi.get('<unk>',0); return [self.stoi.get(p,unk) for p in palabras]
     def decode(self, ids):

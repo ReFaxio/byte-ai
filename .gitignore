@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 _temp_*.py
 _temp_check.py
+
+datos/cooc_mat.npy

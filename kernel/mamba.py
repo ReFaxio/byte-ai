@@ -190,27 +190,39 @@ class Mamba:
             if choice == 3: break
         return gen[len(input_tokens):]
 
-    def entrenar(self, textos, epochs=2, batch_size=64):
+    def entrenar(self, textos, epochs=2, batch_size=256):
         print("  Mamba JAX entrenando...", flush=True)
         pasos = 0
+        max_seq = 16
         for epoch in range(epochs):
             losses = []
+            buffer_x, buffer_y = [], []
             for texto in textos:
                 pals = Vocabulario._tokenizar(texto)
-                if len(pals) < 2: continue
+                if len(pals) < max_seq + 1: continue
                 ids = self.vocab.encode(pals)
-                for i in range(0, len(ids) - 1):
-                    ctx = ids[max(0, i-4):i+1]
-                    if len(ctx) < 2: continue
-                    tokens_j = jnp.array([ctx], dtype=jnp.int32)
-                    targets_j = jnp.array([ids[i+1]], dtype=jnp.int32)
-                    self.p, self.opt, loss = train_step(self.p, self.opt, self.t, tokens_j, targets_j)
+                for i in range(0, len(ids) - max_seq, max_seq // 2):
+                    ctx = ids[i:i + max_seq]
+                    if len(ctx) < max_seq: continue
+                    buffer_x.append(ctx)
+                    buffer_y.append(ids[i + max_seq])
+                if len(buffer_x) >= batch_size:
+                    bx = jnp.array(buffer_x[:batch_size], dtype=jnp.int32)
+                    by = jnp.array(buffer_y[:batch_size], dtype=jnp.int32)
+                    self.p, self.opt, loss = train_step(self.p, self.opt, self.t, bx, by)
                     self.t += 1
                     pasos += 1
                     losses.append(float(loss))
-                    if pasos % 500 == 0:
-                        avg = float(np.mean(losses[-500:]))
+                    buffer_x, buffer_y = buffer_x[batch_size:], buffer_y[batch_size:]
+                    if pasos % 200 == 0:
+                        avg = float(np.mean(losses[-200:]))
                         print(f"    paso {pasos} loss={avg:.4f}", flush=True)
+            if buffer_x:
+                bx = jnp.array(buffer_x, dtype=jnp.int32)
+                by = jnp.array(buffer_y, dtype=jnp.int32)
+                self.p, self.opt, loss = train_step(self.p, self.opt, self.t, bx, by)
+                pasos += 1
+                losses.append(float(loss))
             if losses:
                 print(f"  epoch {epoch+1}/{epochs} loss={np.mean(losses):.4f}", flush=True)
 

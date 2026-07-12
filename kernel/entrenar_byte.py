@@ -20,8 +20,7 @@ def iterar_textos():
                     if isinstance(sub, str): yield f"{k} {sub}"
     for r in sorted(glob.glob(os.path.join(RUTA_DATOS, 'wiki_parte_*.txt'))):
         if os.path.getsize(r) > 100e6:
-            print(f"  Omitido archivo grande: {os.path.basename(r)}")
-            continue
+            print(f"  Archivo grande incluido: {os.path.basename(r)} ({os.path.getsize(r)//1048576}MB)")
         print(f"  Leyendo {os.path.basename(r)}...", flush=True)
         with open(r, encoding='utf-8') as f:
             while True:

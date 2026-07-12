@@ -46,7 +46,7 @@ def tokenizar_y_cachear(vocab):
     return ids
 
 def construir_vocab():
-    print("  Construyendo vocabulario...", flush=True)
+    print("  Construyendo vocabulario (todas las wikis)...", flush=True)
     c = Counter()
     if os.path.exists(RUTA_RAE):
         with open(RUTA_RAE, encoding='utf-8') as f:
@@ -59,8 +59,9 @@ def construir_vocab():
                     if isinstance(sub, str):
                         for p in Vocabulario._tokenizar(f"{k} {sub}"): c[p] += 1
     archivos = sorted(glob.glob(os.path.join(RUTA_DATOS, 'wiki_parte_*.txt')))
-    for r in archivos[:5]:
-        print(f"  Vocab: {os.path.basename(r)}", flush=True)
+    for i, r in enumerate(archivos):
+        if i % 25 == 0:
+            print(f"  Vocab wiki {i}/{len(archivos)}...", flush=True)
         with open(r, encoding='utf-8') as f:
             for p in Vocabulario._tokenizar(f.read()): c[p] += 1
     comunes = [p for p, _ in c.most_common(16000 - 4) if _ >= 1]

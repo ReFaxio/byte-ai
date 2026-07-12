@@ -154,7 +154,6 @@ class Mamba:
     def generar(self, input_tokens, max_new=20, temperature=0.8, top_k=20, top_p=0.9):
         gen = list(input_tokens)
         d_state = self.p['A'].shape[0]
-        h = np.zeros((1, d_state))
         A = np.array(self.p['A'])
         B = np.array(self.p['B'])
         C = np.array(self.p['C'])
@@ -164,19 +163,18 @@ class Mamba:
         b2 = np.array(self.p['b_ffn2'])
         emb = np.array(self.p['emb'])
 
+        h = np.zeros((1, d_state))
+        x = emb[np.array([input_tokens])]
+        for t in range(x.shape[1]):
+            h = h @ A.T + x[:, t:t+1, :] @ B
         for _ in range(max_new):
-            ctx = gen[-64:]
-            x = emb[np.array([ctx])]
-            for t in range(x.shape[1]):
-                inp = x[:, t, :]
-                h = h @ A.T + inp @ B
-                out = h @ C
+            out = h @ C
             logits = out @ W1 + b1
             logits = np.maximum(0, logits)
             logits = logits @ W2 + b2
             logits = logits[0] / temperature
-            logits[0] = -np.inf  # <pad>
-            logits[1] = -np.inf  # <unk>
+            logits[0] = -np.inf
+            logits[1] = -np.inf
             if top_k > 0:
                 idxs = np.argpartition(-logits, top_k)[:top_k]
                 vals = logits[idxs]
@@ -199,11 +197,12 @@ class Mamba:
                 choice = int(np.random.choice(self.vocab_size, p=probs))
             gen.append(choice)
             if choice == 3: break
+            x = emb[np.array([[choice]])]
+            h = h @ A.T + x @ B
         return gen[len(input_tokens):]
 
-    def entrenar(self, ids, epochs=2, batch_size=256):
+    def entrenar(self, ids, epochs=2, batch_size=256, max_seq=16):
         print("  Mamba JAX entrenando...", flush=True)
-        max_seq = 16
         step = max_seq // 2
         N = (len(ids) - max_seq) // step
         x = np.zeros((N, max_seq), dtype=np.int32)

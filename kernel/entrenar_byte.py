@@ -63,15 +63,18 @@ def main():
     print(f"  {len(ids)} tokens")
 
     print("\n--- Mamba ---")
-    m = Mamba(vocab_size=vocab.size)
+    m = Mamba(vocab_size=vocab.size, d_model=256, d_state=128, d_ff=512)
     m.vocab = vocab
-    if m.cargar():
-        print("  Modelo existente cargado")
-    else:
-        print("  Nuevo modelo")
+    # Forzar entrenar desde cero con nuevo tamaño
+    if os.path.exists(RUTA_MODELO):
+        print("  Eliminando modelo anterior para nuevo tamaño...", flush=True)
+        os.remove(RUTA_MODELO)
+        opt_pkl = RUTA_MODELO.replace('.npz', '_opt.pkl')
+        if os.path.exists(opt_pkl): os.remove(opt_pkl)
+    print("  Nuevo modelo (d_model=256, d_state=128, d_ff=512)")
 
     print("\n--- Entrenando ---")
-    m.entrenar(ids, epochs=8)
+    m.entrenar(ids, epochs=50, batch_size=256, max_seq=48)
     m.guardar()
 
     t = time.time() - t0

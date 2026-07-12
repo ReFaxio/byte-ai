@@ -93,7 +93,7 @@ def loss_fn(params, tokens, targets):
     logits = forward(params, tokens)
     logits_f = logits - logits.max(axis=-1, keepdims=True)
     log_probs = logits_f - jnp.log(jnp.exp(logits_f).sum(axis=-1, keepdims=True))
-    oh = jax.nn.one_hot(targets[:, -1], logits.shape[-1])
+    oh = jax.nn.one_hot(targets, logits.shape[-1])
     return -jnp.mean((log_probs * oh).sum(axis=-1))
 
 

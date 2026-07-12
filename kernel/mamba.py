@@ -201,31 +201,33 @@ class Mamba:
             h = h @ A.T + x @ B
         return gen[len(input_tokens):]
 
-    def entrenar(self, ids, epochs=2, batch_size=256, max_seq=16):
-        print("  Mamba JAX entrenando...", flush=True)
+    def entrenar(self, ids, epochs=2, batch_size=256, max_seq=48):
+        print("  Mamba JAX entrenando (streaming)...", flush=True)
         step = max_seq // 2
-        N = (len(ids) - max_seq) // step
-        x = np.zeros((N, max_seq), dtype=np.int32)
-        y = np.zeros(N, dtype=np.int32)
-        for i in range(N):
-            off = i * step
-            x[i] = ids[off:off + max_seq]
-            y[i] = ids[off + max_seq]
-        print(f"  Dataset: {N} muestras, entrenando {epochs} epochs...", flush=True)
+        max_start = len(ids) - max_seq
+        N = max_start // step
+        print(f"  {len(ids)} tokens, {N} muestras, {epochs} epochs", flush=True)
         pasos = 0
+        offsets = np.arange(max_seq, dtype=np.int32)
         for epoch in range(epochs):
             losses = []
-            idxs = np.random.permutation(N)
-            for start in range(0, N, batch_size):
-                batch_idx = idxs[start:start + batch_size]
-                bx = jnp.array(x[batch_idx], dtype=jnp.int32)
-                by = jnp.array(y[batch_idx], dtype=jnp.int32)
-                self.p, self.opt, loss = train_step(self.p, self.opt, self.t, bx, by)
+            starts = np.arange(0, max_start, step, dtype=np.int32)
+            np.random.shuffle(starts)
+            for i in range(0, N, batch_size):
+                batch_starts = starts[i:i + batch_size]
+                B = len(batch_starts)
+                idx = batch_starts[:, None] + offsets
+                bx = ids[idx]
+                by = ids[batch_starts + max_seq]
+                self.p, self.opt, loss = train_step(
+                    self.p, self.opt, self.t,
+                    jnp.array(bx, dtype=jnp.int32),
+                    jnp.array(by, dtype=jnp.int32))
                 self.t += 1
                 pasos += 1
                 losses.append(float(loss))
-                if pasos % 100 == 0:
-                    avg = float(np.mean(losses[-100:]))
+                if pasos % 200 == 0:
+                    avg = float(np.mean(losses[-200:]))
                     print(f"    paso {pasos} loss={avg:.4f}", flush=True)
             if losses:
                 print(f"  epoch {epoch+1}/{epochs} loss={np.mean(losses):.4f}", flush=True)

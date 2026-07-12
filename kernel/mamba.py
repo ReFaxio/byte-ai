@@ -151,7 +151,7 @@ class Mamba:
         logits = logits @ np.array(self.p['W_ffn2']) + np.array(self.p['b_ffn2'])
         return logits
 
-    def generar(self, input_tokens, max_new=20, temperature=0.8, top_k=20):
+    def generar(self, input_tokens, max_new=20, temperature=0.8, top_k=20, top_p=0.9):
         gen = list(input_tokens)
         d_state = self.p['A'].shape[0]
         h = np.zeros((1, d_state))
@@ -175,11 +175,23 @@ class Mamba:
             logits = np.maximum(0, logits)
             logits = logits @ W2 + b2
             logits = logits[0] / temperature
+            logits[0] = -np.inf  # <pad>
+            logits[1] = -np.inf  # <unk>
             if top_k > 0:
                 idxs = np.argpartition(-logits, top_k)[:top_k]
                 vals = logits[idxs]
                 exp_v = np.exp(vals - vals.max())
                 probs = exp_v / exp_v.sum()
+                choice = int(np.random.choice(idxs, p=probs))
+            elif top_p < 1.0:
+                idxs = np.argsort(-logits)
+                vals = logits[idxs]
+                exp_v = np.exp(vals - vals.max())
+                probs = exp_v / exp_v.sum()
+                cumsum = np.cumsum(probs)
+                cutoff = np.searchsorted(cumsum, top_p)
+                idxs = idxs[:cutoff + 1]
+                probs = probs[:cutoff + 1] / probs[:cutoff + 1].sum()
                 choice = int(np.random.choice(idxs, p=probs))
             else:
                 exp_v = np.exp(logits - logits.max())

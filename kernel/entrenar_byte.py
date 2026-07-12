@@ -71,7 +71,7 @@ def main():
         print("  Nuevo modelo")
 
     print("\n--- Entrenando ---")
-    m.entrenar(ids, epochs=15)
+    m.entrenar(ids, epochs=8)
     m.guardar()
 
     t = time.time() - t0
@@ -80,7 +80,7 @@ def main():
     print("\n--- Demo ---")
     prompt = ['la', 'inteligencia', 'artificial']
     ids_prompt = [vocab.stoi.get(p, vocab.stoi.get('<unk>', 0)) for p in prompt]
-    nuevos = m.generar(ids_prompt, max_new=30, temperature=0.8)
+    nuevos = m.generar(ids_prompt, max_new=30, temperature=0.7, top_k=0, top_p=0.9)
     print(f"  Prompt: {' '.join(prompt)}")
     print(f"  Byte:   {vocab.a_texto(ids_prompt + nuevos)}", flush=True)
 

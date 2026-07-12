@@ -13,20 +13,25 @@ def iterar_textos():
     if os.path.exists(RUTA_RAE):
         with open(RUTA_RAE, encoding='utf-8') as f:
             datos = json.load(f)
+        texto_rae = []
         for k, v in datos.items():
-            if isinstance(v, str): yield f"{k} {v}"
+            if isinstance(v, str): texto_rae.append(f"{k} {v}")
             elif isinstance(v, dict):
                 for sub in v.values():
-                    if isinstance(sub, str): yield f"{k} {sub}"
+                    if isinstance(sub, str): texto_rae.append(f"{k} {sub}")
+        yield ' '.join(texto_rae)
     for r in sorted(glob.glob(os.path.join(RUTA_DATOS, 'wiki_parte_*.txt'))):
         if os.path.getsize(r) > 100e6:
             print(f"  Archivo grande incluido: {os.path.basename(r)} ({os.path.getsize(r)//1048576}MB)")
-        print(f"  Leyendo {os.path.basename(r)}...", flush=True)
-        with open(r, encoding='utf-8') as f:
-            while True:
-                chunk = f.read(10*1048576)
-                if not chunk: break
-                yield chunk
+            with open(r, encoding='utf-8') as f:
+                while True:
+                    chunk = f.read(50*1048576)
+                    if not chunk: break
+                    yield chunk
+        else:
+            print(f"  Leyendo {os.path.basename(r)}...", flush=True)
+            with open(r, encoding='utf-8') as f:
+                yield f.read()
 
 def main():
     t0 = time.time()

@@ -166,13 +166,13 @@ class Mamba:
         h = np.zeros((1, d_state))
         x = emb[np.array([input_tokens])]
         for t in range(x.shape[1]):
-            h = h @ A.T + x[:, t:t+1, :] @ B
+            h = h @ A.T + x[:, t, :] @ B
         for _ in range(max_new):
             out = h @ C
             logits = out @ W1 + b1
             logits = np.maximum(0, logits)
             logits = logits @ W2 + b2
-            logits = logits[0] / temperature
+            logits = logits.reshape(-1) / temperature
             logits[0] = -np.inf
             logits[1] = -np.inf
             if top_k > 0:
@@ -197,7 +197,7 @@ class Mamba:
                 choice = int(np.random.choice(self.vocab_size, p=probs))
             gen.append(choice)
             if choice == 3: break
-            x = emb[np.array([[choice]])]
+            x = emb[np.array([[choice]])][0]
             h = h @ A.T + x @ B
         return gen[len(input_tokens):]
 

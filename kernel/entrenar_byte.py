@@ -65,16 +65,12 @@ def main():
     print("\n--- Mamba ---")
     m = Mamba(vocab_size=vocab.size, d_model=256, d_state=128, d_ff=512)
     m.vocab = vocab
-    # Forzar entrenar desde cero con nuevo tamaño
-    if os.path.exists(RUTA_MODELO):
-        print("  Eliminando modelo anterior para nuevo tamaño...", flush=True)
-        os.remove(RUTA_MODELO)
-        opt_pkl = RUTA_MODELO.replace('.npz', '_opt.pkl')
-        if os.path.exists(opt_pkl): os.remove(opt_pkl)
-    print("  Nuevo modelo (d_model=256, d_state=128, d_ff=512)")
-
-    print("\n--- Entrenando ---")
-    m.entrenar(ids, epochs=50, batch_size=256, max_seq=48)
+    if m.cargar():
+        print("  Modelo cargado (loss ~1.86)")
+    else:
+        print("  Nuevo modelo, entrenando...")
+        m.entrenar(ids, epochs=50, batch_size=256, max_seq=48)
+        m.guardar()
     m.guardar()
 
     t = time.time() - t0

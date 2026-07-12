@@ -225,6 +225,38 @@ class Mamba:
             if losses:
                 print(f"  epoch {epoch+1}/{epochs} loss={np.mean(losses):.4f}", flush=True)
 
+    def entrenar_desde_ids(self, ids, epochs=2, batch_size=256):
+        print("  Mamba JAX entrenando desde IDs cacheados...", flush=True)
+        pasos = 0
+        max_seq = 16
+        for epoch in range(epochs):
+            losses = []
+            buffer_x, buffer_y = [], []
+            for i in range(0, len(ids) - max_seq, max_seq // 2):
+                ctx = ids[i:i + max_seq]
+                if len(ctx) < max_seq: continue
+                buffer_x.append(ctx)
+                buffer_y.append(ids[i + max_seq])
+                if len(buffer_x) >= batch_size:
+                    bx = jnp.array(buffer_x[:batch_size], dtype=jnp.int32)
+                    by = jnp.array(buffer_y[:batch_size], dtype=jnp.int32)
+                    self.p, self.opt, loss = train_step(self.p, self.opt, self.t, bx, by)
+                    self.t += 1
+                    pasos += 1
+                    losses.append(float(loss))
+                    buffer_x, buffer_y = buffer_x[batch_size:], buffer_y[batch_size:]
+                    if pasos % 100 == 0:
+                        avg = float(np.mean(losses[-100:]))
+                        print(f"    paso {pasos} loss={avg:.4f}", flush=True)
+            if buffer_x:
+                bx = jnp.array(buffer_x, dtype=jnp.int32)
+                by = jnp.array(buffer_y, dtype=jnp.int32)
+                self.p, self.opt, loss = train_step(self.p, self.opt, self.t, bx, by)
+                pasos += 1
+                losses.append(float(loss))
+            if losses:
+                print(f"  epoch {epoch+1}/{epochs} loss={np.mean(losses):.4f}", flush=True)
+
     def guardar(self, ruta=None):
         ruta = ruta or RUTA_MODELO
         p_np = {k: np.array(v) for k, v in self.p.items()}
